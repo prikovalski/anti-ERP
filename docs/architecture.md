@@ -24,3 +24,14 @@ Traditional ERPs expose screens and CRUD endpoints, then force people to transla
 4. Add evals for the core sales-order flow, ambiguity handling, and refusal behavior.
 5. Consider RAG only for business-document retrieval, not for transactional truth.
 6. Add human-in-the-loop approval flows before any irreversible operation.
+
+## Public demo LLM posture
+
+The public demo must never expose an LLM key to the browser. The Command Center calls server-side API routes:
+
+```text
+Browser -> /api/agent -> optional OpenRouter intent inference -> demo-agent tools
+Browser -> /api/agent/confirm -> explicit write action
+```
+
+OpenRouter is optional and used only for intent inference. The deterministic demo-agent remains the default fallback, so the public demo stays usable when free model capacity is unavailable.

@@ -1,6 +1,6 @@
 "use client";
 
-import type { AuditEvent, ConceptInvoice, SalesOrder, SalesOrderPreview } from "@anti-erp/shared";
+import type { AgentResponse, AuditEvent, ConceptInvoice, SalesOrder, SalesOrderPreview } from "@anti-erp/shared";
 import { Bot, Check, CircleDollarSign, Clock3, FileText, GitBranch, Send, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -8,22 +8,6 @@ type Message = {
   id: string;
   role: "user" | "agent";
   text: string;
-};
-
-const customer = {
-  id: "cus_acme",
-  name: "ACME Industries",
-  taxId: "12.345.678/0001-90",
-  city: "Sao Paulo",
-  status: "active" as const
-};
-
-const notebook = {
-  id: "prd_notebook_air",
-  sku: "NB-AIR-14",
-  name: "Notebook Air 14",
-  unitPrice: 6200,
-  availableStock: 37
 };
 
 function createAudit(action: string, summary: string, actor: AuditEvent["actor"] = "mcp-tool"): AuditEvent {
@@ -43,25 +27,6 @@ function money(value: number) {
   }).format(value);
 }
 
-function buildPreview(quantity: number): SalesOrderPreview {
-  return {
-    customer,
-    lines: [
-      {
-        productId: notebook.id,
-        sku: notebook.sku,
-        name: notebook.name,
-        quantity,
-        unitPrice: notebook.unitPrice,
-        total: notebook.unitPrice * quantity
-      }
-    ],
-    subtotal: notebook.unitPrice * quantity,
-    warnings: [],
-    confirmationRequired: true
-  };
-}
-
 export default function CommandCenterPage() {
   const [input, setInput] = useState("Crie um pedido para ACME com 10 notebooks e gere a nota.");
   const [messages, setMessages] = useState<Message[]>([
@@ -74,6 +39,9 @@ export default function CommandCenterPage() {
   const [preview, setPreview] = useState<SalesOrderPreview | null>(null);
   const [order, setOrder] = useState<SalesOrder | null>(null);
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
+  const [lastOrderId, setLastOrderId] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("demo-agent");
+  const [pending, setPending] = useState(false);
   const [audit, setAudit] = useState<AuditEvent[]>([
     createAudit("session_started", "Command Center opened in demo-safe mode.", "system")
   ]);
@@ -88,73 +56,105 @@ export default function CommandCenterPage() {
     []
   );
 
-  function runIntent(command: string) {
+  function applyAgentResponse(response: AgentResponse) {
+    setMessages((current) => [...current, response.message]);
+    setAgentMode(response.mode);
+    setPreview(response.preview ?? null);
+    setOrder(response.order ?? order);
+    setInvoice(response.invoice ?? invoice);
+    setLastOrderId(response.lastOrderId ?? lastOrderId);
+    setAudit((current) => [...response.auditEvents, ...current]);
+  }
+
+  async function runIntent(command: string) {
     if (!command.trim()) {
       return;
     }
 
-    const quantityMatch = command.match(/(\d+)\s+(notebook|notebooks)/i);
-    const quantity = quantityMatch ? Number(quantityMatch[1]) : 10;
-    const nextPreview = buildPreview(quantity);
-
     setMessages((current) => [
       ...current,
-      { id: `user_${Date.now()}`, role: "user", text: command },
-      {
-        id: `agent_${Date.now()}`,
-        role: "agent",
-        text: "Encontrei ACME, localizei Notebook Air 14, validei estoque e preparei uma previa. Preciso da sua confirmacao antes de criar o pedido."
-      }
+      { id: `user_${Date.now()}`, role: "user", text: command }
     ]);
-    setPreview(nextPreview);
+    setPending(true);
     setOrder(null);
     setInvoice(null);
-    setAudit((current) => [
-      createAudit("search_customer", "Matched customer ACME Industries."),
-      createAudit("search_product", "Matched product Notebook Air 14."),
-      createAudit("validate_stock", `Validated ${quantity} units against ${notebook.availableStock} in stock.`),
-      createAudit("prepare_sales_order", `Prepared preview for ${money(nextPreview.subtotal)}.`),
-      ...current
-    ]);
     setInput("");
+
+    try {
+      const response = await fetch("/api/agent", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          message: command,
+          lastOrderId: lastOrderId ?? undefined
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Agent request failed with ${response.status}`);
+      }
+
+      applyAgentResponse((await response.json()) as AgentResponse);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `agent_error_${Date.now()}`,
+          role: "agent",
+          text: "Nao consegui processar esse comando agora. A demo continua segura: nenhuma escrita foi executada."
+        }
+      ]);
+      setAudit((current) => [
+        createAudit("agent_request_failed", "Command Center could not reach the agent API.", "system"),
+        ...current
+      ]);
+    } finally {
+      setPending(false);
+    }
   }
 
-  function confirmPreview() {
+  async function confirmPreview() {
     if (!preview) {
       return;
     }
 
-    const createdOrder: SalesOrder = {
-      ...preview,
-      id: `SO-${Math.floor(1000 + Math.random() * 9000)}`,
-      status: "confirmed",
-      createdAt: new Date().toISOString()
-    };
-    const createdInvoice: ConceptInvoice = {
-      id: `CI-${Math.floor(1000 + Math.random() * 9000)}`,
-      salesOrderId: createdOrder.id,
-      customerName: createdOrder.customer.name,
-      amount: createdOrder.subtotal,
-      issuedAt: new Date().toISOString(),
-      disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document."
-    };
+    setPending(true);
+    try {
+      const response = await fetch("/api/agent/confirm", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          preview,
+          createInvoice: input.toLowerCase().includes("nota") || messages.some((message) => message.text.includes("nota"))
+        })
+      });
 
-    setOrder(createdOrder);
-    setInvoice(createdInvoice);
-    setPreview(null);
-    setMessages((current) => [
-      ...current,
-      {
-        id: `agent_done_${Date.now()}`,
-        role: "agent",
-        text: `Pedido ${createdOrder.id} criado e nota conceitual ${createdInvoice.id} gerada. Tudo ficou registrado na timeline.`
+      if (!response.ok) {
+        throw new Error(`Confirm request failed with ${response.status}`);
       }
-    ]);
-    setAudit((current) => [
-      createAudit("create_sales_order", `Created sales order ${createdOrder.id}.`),
-      createAudit("create_concept_invoice", `Generated concept invoice ${createdInvoice.id}.`),
-      ...current
-    ]);
+
+      applyAgentResponse((await response.json()) as AgentResponse);
+      setPreview(null);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `agent_confirm_error_${Date.now()}`,
+          role: "agent",
+          text: "Nao consegui confirmar o pedido agora. Nenhuma criacao foi aplicada."
+        }
+      ]);
+      setAudit((current) => [
+        createAudit("confirmation_failed", "The confirmation request failed before creating a sales order.", "system"),
+        ...current
+      ]);
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -171,7 +171,7 @@ export default function CommandCenterPage() {
               </div>
               <div className="flex items-center gap-2 rounded-full border border-line px-3 py-2 text-sm text-steel">
                 <Sparkles className="h-4 w-4" aria-hidden="true" />
-                demo-safe mode
+                {agentMode === "openrouter" ? "OpenRouter assisted" : agentMode === "fallback" ? "fallback mode" : "demo-safe mode"}
               </div>
             </header>
 
@@ -208,8 +208,9 @@ export default function CommandCenterPage() {
                       </p>
                     </div>
                     <button
-                      className="inline-flex min-h-11 items-center gap-2 rounded-md bg-signal px-4 py-2 font-semibold text-white"
+                      className="inline-flex min-h-11 items-center gap-2 rounded-md bg-signal px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                       onClick={confirmPreview}
+                      disabled={pending}
                       title="Confirm and create order"
                     >
                       <Check className="h-5 w-5" aria-hidden="true" />
@@ -218,7 +219,12 @@ export default function CommandCenterPage() {
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-3">
                     <Metric label="Customer" value={preview.customer.name} />
-                    <Metric label="Items" value={`${preview.lines[0]?.quantity ?? 0} notebooks`} />
+                    <Metric
+                      label="Items"
+                      value={preview.lines
+                        .map((line) => `${line.quantity} x ${line.name}`)
+                        .join(", ")}
+                    />
                     <Metric label="Subtotal" value={money(preview.subtotal)} />
                   </div>
                 </div>
@@ -251,8 +257,9 @@ export default function CommandCenterPage() {
                   aria-label="Business command"
                 />
                 <button
-                  className="inline-flex min-h-16 w-16 items-center justify-center rounded-lg bg-ink text-white"
+                  className="inline-flex min-h-16 w-16 items-center justify-center rounded-lg bg-ink text-white disabled:cursor-not-allowed disabled:opacity-60"
                   type="submit"
+                  disabled={pending}
                   title="Send command"
                 >
                   <Send className="h-6 w-6" aria-hidden="true" />

@@ -92,6 +92,20 @@ In another terminal:
 pnpm mcp:dev
 ```
 
+## LLM configuration
+
+The demo is safe to run without any LLM key. In that case, the Command Center uses a deterministic demo-agent that can classify the core MVP intents and execute the same typed flow.
+
+To experiment with a free OpenRouter model, create `.env.local` inside `apps/command-center` or set the variables in Vercel:
+
+```bash
+OPENROUTER_API_KEY=your_server_side_key
+OPENROUTER_MODEL=openrouter/free
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+Do not expose secrets with `NEXT_PUBLIC_`. The browser calls `/api/agent`; the OpenRouter key stays server-side only. If OpenRouter is unavailable, rate-limited, or returns invalid output, the app falls back to the deterministic demo-agent.
+
 ## Why this matters
 
 Enterprise software is full of accidental complexity. Agents give us a chance to remove some of it, but only if we avoid building a thin chatbot over the same old screens.
