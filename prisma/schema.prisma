@@ -30,7 +30,7 @@ model Product {
 }
 
 model SalesOrder {
-  id        String           @id @default(cuid())
+  id        String           @id
   customerId String
   customer  Customer         @relation(fields: [customerId], references: [id])
   status    SalesOrderStatus @default(confirmed)
@@ -51,12 +51,18 @@ model SalesOrderLine {
 }
 
 model ConceptInvoice {
-  id           String     @id @default(cuid())
+  id           String     @id
   salesOrderId String
   salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
   amountCents  Int
   disclaimer   String
   issuedAt     DateTime   @default(now())
+}
+
+model SequenceCounter {
+  name      String   @id
+  nextValue Int
+  updatedAt DateTime @updatedAt
 }
 
 model AuditEvent {

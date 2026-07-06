@@ -6,7 +6,7 @@ The anti-ERP is not an ERP with a chatbot attached. It is an MCP-native business
 
 ## Demo promise
 
-A visitor can open the public demo, type "Create an order for ACME with 10 notebooks and generate the invoice", review a confirmation card, approve it, and see an auditable timeline of what the agent did.
+A visitor can open the public demo, type "Create an order for Northstar with 10 notebooks and generate the invoice", review a confirmation card, approve it, and see an auditable timeline of what the agent did.
 
 ## Required capabilities
 

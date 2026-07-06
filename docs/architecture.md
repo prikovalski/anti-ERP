@@ -23,10 +23,11 @@ The Command Center depends on a `CapabilityGateway` interface, not on domain dat
 
 ```text
 /api/agent -> Agent -> CapabilityGateway -> Demo Gateway
-                                └-------> MCP Gateway -> anti-ERP MCP Server
+                                ├-------> MCP Gateway -> anti-ERP MCP Server
+                                └-------> Prisma Gateway -> PostgreSQL
 ```
 
-The demo gateway keeps the public deployment stable and free. The MCP gateway exercises the intended architecture by spawning the MCP server over stdio and calling explicit tools. This keeps the product thesis honest while preserving a reliable fallback for public demos.
+The demo gateway keeps the public deployment stable and free. The MCP gateway exercises the intended architecture by spawning the MCP server over stdio and calling explicit tools. The Prisma gateway persists orders, concept invoices, audit events, and document counters. This keeps the product thesis honest while preserving a reliable fallback for public demos.
 
 ## AI architecture roadmap
 

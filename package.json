@@ -8,6 +8,9 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
     "mcp:dev": "pnpm --filter @anti-erp/mcp-server dev",
     "command-center:dev": "pnpm --filter @anti-erp/command-center dev"
   },
@@ -21,6 +24,9 @@
   "license": "MIT",
   "packageManager": "pnpm@9.15.4",
   "devDependencies": {
+    "@prisma/client": "6",
+    "prisma": "^6.19.3",
+    "tsx": "^4.20.3",
     "turbo": "^2.5.4",
     "typescript": "^5.8.3"
   }

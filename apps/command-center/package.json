@@ -12,6 +12,7 @@
   "dependencies": {
     "@anti-erp/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.15.0",
+    "@prisma/client": "^6.19.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
     "next": "^15.3.4",
@@ -27,6 +28,7 @@
     "@types/react-dom": "^19.1.6",
     "autoprefixer": "^10.4.21",
     "postcss": "^8.5.6",
+    "prisma": "6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3"
   }

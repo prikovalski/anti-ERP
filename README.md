@@ -25,7 +25,7 @@ The public demo opens directly in the Command Center. No login, no menu tree.
 Try:
 
 ```text
-Crie um pedido para ACME com 10 notebooks e gere a nota.
+Crie um pedido para Northstar com 10 notebooks e gere a nota.
 ```
 
 The prototype:
@@ -96,6 +96,18 @@ MCP_SERVER_ARGS="--filter @anti-erp/mcp-server dev"
 ```
 
 In both modes, the agent orchestrates capabilities. Domain actions stay behind explicit operations such as `search_customer`, `validate_stock`, `prepare_sales_order`, and `create_sales_order`.
+
+To persist demo state with Prisma/PostgreSQL:
+
+```bash
+DATABASE_URL="postgresql://..."
+CAPABILITY_GATEWAY=prisma
+pnpm db:generate
+pnpm db:push
+pnpm db:seed
+```
+
+The Prisma gateway persists sales orders, concept invoices, audit events, and document counters. If `DATABASE_URL` is missing, the public demo should stay on `CAPABILITY_GATEWAY=demo`.
 
 ## Run locally
 

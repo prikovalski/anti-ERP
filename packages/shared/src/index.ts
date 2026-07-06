@@ -121,8 +121,8 @@ export const AgentResponseSchema = z.object({
 
 export const demoCustomers: Customer[] = [
   {
-    id: "cus_acme",
-    name: "ACME Industries",
+    id: "cus_northstar",
+    name: "Northstar Labs",
     taxId: "12.345.678/0001-90",
     city: "Sao Paulo",
     status: "active"
@@ -169,6 +169,7 @@ export const demoProducts: Product[] = [
 
 export type Customer = z.infer<typeof CustomerSchema>;
 export type Product = z.infer<typeof ProductSchema>;
+export type SalesOrderLine = z.infer<typeof SalesOrderLineSchema>;
 export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;
 export type ConceptInvoice = z.infer<typeof ConceptInvoiceSchema>;

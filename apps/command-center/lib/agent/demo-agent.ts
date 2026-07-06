@@ -86,8 +86,8 @@ export function parseIntentLocally(message: string): AgentIntent {
         ? "globo"
         : normalized.includes("legacy")
           ? "legacy"
-          : normalized.includes("acme")
-            ? "acme"
+        : normalized.includes("northstar")
+            ? "northstar"
             : null,
       productQuery: normalized.includes("monitor")
         ? "monitor"

@@ -15,11 +15,12 @@ export async function POST(request: Request) {
       message: body.message,
       intent,
       mode,
-      gateway: getCapabilityGateway(),
+      gateway: await getCapabilityGateway(),
       lastOrderId: body.lastOrderId
     });
     return NextResponse.json(AgentResponseSchema.parse(await response));
   } catch (error) {
+    console.error("Agent capability gateway failed. Falling back to demo gateway.", error);
     mode = "fallback";
     const response = await runDemoAgent({
       message: body.message,

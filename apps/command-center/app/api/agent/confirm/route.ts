@@ -16,9 +16,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const response = await confirmSalesOrder(getCapabilityGateway(), body.preview, body.createInvoice);
+    const response = await confirmSalesOrder(await getCapabilityGateway(), body.preview, body.createInvoice);
     return NextResponse.json(AgentResponseSchema.parse(response));
   } catch (error) {
+    console.error("Confirmation capability gateway failed. Falling back to demo gateway.", error);
     const response = await confirmSalesOrder(getFallbackCapabilityGateway(), body.preview, body.createInvoice);
     return NextResponse.json(AgentResponseSchema.parse({ ...response, mode: "fallback" }));
   }

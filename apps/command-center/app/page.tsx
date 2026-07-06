@@ -41,7 +41,7 @@ function money(value: number) {
 }
 
 export default function CommandCenterPage() {
-  const [input, setInput] = useState("Crie um pedido para ACME com 10 notebooks e gere a nota.");
+  const [input, setInput] = useState("Crie um pedido para Northstar com 10 notebooks e gere a nota.");
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -62,7 +62,7 @@ export default function CommandCenterPage() {
 
   const suggestions = useMemo(
     () => [
-      "Crie um pedido para ACME com 10 notebooks",
+      "Crie um pedido para Northstar com 10 notebooks",
       "Gere uma nota para o último pedido",
       "Liste os pedidos criados hoje",
       "Explique como isso seria feito em um ERP tradicional"
