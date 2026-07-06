@@ -24,6 +24,7 @@ A visitor can open the public demo, type "Create an order for ACME with 10 noteb
 
 - The agent never writes directly to the database.
 - Every write must pass through an MCP tool.
+- The Command Center must call business actions through a capability gateway, not direct domain data access.
 - `prepare_sales_order` returns a preview only.
 - `create_sales_order` requires explicit user confirmation.
 - `create_concept_invoice` requires an existing sales order.

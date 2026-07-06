@@ -12,9 +12,21 @@ Traditional ERPs expose screens and CRUD endpoints, then force people to transla
 
 - The Command Center owns the user experience, confirmation states, and audit visualization.
 - The agent interprets intent and plans tool calls.
+- The Capability Gateway is the boundary between agent orchestration and executable business capabilities.
 - The MCP Server owns business capabilities and validation.
 - Domain Services own invariants such as stock validation, customer status, and order creation.
 - Prisma/PostgreSQL persist state when the prototype moves beyond seeded demo data.
+
+## Capability gateway
+
+The Command Center depends on a `CapabilityGateway` interface, not on domain data directly.
+
+```text
+/api/agent -> Agent -> CapabilityGateway -> Demo Gateway
+                                └-------> MCP Gateway -> anti-ERP MCP Server
+```
+
+The demo gateway keeps the public deployment stable and free. The MCP gateway exercises the intended architecture by spawning the MCP server over stdio and calling explicit tools. This keeps the product thesis honest while preserving a reliable fallback for public demos.
 
 ## AI architecture roadmap
 

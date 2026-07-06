@@ -79,6 +79,24 @@ anti-erp/
 
 Key rule: `prepare_sales_order` only creates a preview. `create_sales_order` requires explicit user confirmation.
 
+## Capability gateway
+
+The Command Center talks to capabilities through a gateway interface. By default, it uses the deterministic in-memory gateway for a stable public demo:
+
+```bash
+CAPABILITY_GATEWAY=demo
+```
+
+To exercise the MCP-native path locally:
+
+```bash
+CAPABILITY_GATEWAY=mcp
+MCP_SERVER_COMMAND=pnpm
+MCP_SERVER_ARGS="--filter @anti-erp/mcp-server dev"
+```
+
+In both modes, the agent orchestrates capabilities. Domain actions stay behind explicit operations such as `search_customer`, `validate_stock`, `prepare_sales_order`, and `create_sales_order`.
+
 ## Run locally
 
 ```bash

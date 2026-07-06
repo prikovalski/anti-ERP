@@ -1,16 +1,10 @@
 import {
   AgentResponse,
   AuditEvent,
-  ConceptInvoice,
-  SalesOrder,
-  SalesOrderPreview,
-  demoCustomers,
-  demoProducts
+  SalesOrderPreview
 } from "@anti-erp/shared";
+import type { CapabilityGateway } from "@/lib/capabilities";
 import type { AgentIntent } from "./openrouter";
-
-const salesOrders = new Map<string, SalesOrder>();
-const invoices = new Map<string, ConceptInvoice>();
 
 function now() {
   return new Date().toISOString();
@@ -118,15 +112,17 @@ export function parseIntentLocally(message: string): AgentIntent {
   };
 }
 
-export function runDemoAgent(input: {
+export async function runDemoAgent(input: {
   message: string;
   intent: AgentIntent;
   mode: AgentResponse["mode"];
+  gateway: CapabilityGateway;
   lastOrderId?: string;
-}): AgentResponse {
-  const { intent, lastOrderId, mode } = input;
+}): Promise<AgentResponse> {
+  const { gateway, intent, lastOrderId, mode } = input;
 
   if (intent.intent === "traditional_flow") {
+    await gateway.getTraditionalErpFlow();
     return {
       mode,
       message: {
@@ -143,7 +139,7 @@ export function runDemoAgent(input: {
   }
 
   if (intent.intent === "list_orders") {
-    const orders = Array.from(salesOrders.values()).slice(-5).reverse();
+    const orders = await gateway.listRecentOrders();
     return {
       mode,
       message: {
@@ -162,7 +158,8 @@ export function runDemoAgent(input: {
 
   if (intent.intent === "create_invoice") {
     const orderId = lastOrderId;
-    if (!orderId || !salesOrders.has(orderId)) {
+    const existingOrder = orderId ? await gateway.getSalesOrder({ salesOrderId: orderId }) : null;
+    if (!orderId || !existingOrder) {
       return {
         mode,
         message: {
@@ -175,7 +172,7 @@ export function runDemoAgent(input: {
       };
     }
 
-    const invoice = createInvoiceForOrder(orderId);
+    const invoice = await gateway.createConceptInvoice({ salesOrderId: orderId });
     return {
       mode,
       invoice,
@@ -190,8 +187,14 @@ export function runDemoAgent(input: {
   }
 
   if (intent.intent === "create_order") {
-    const customer = findCustomer(intent.customerQuery);
-    const product = findProduct(intent.productQuery);
+    const customerMatches = intent.customerQuery
+      ? await gateway.searchCustomer({ query: intent.customerQuery })
+      : [];
+    const productMatches = intent.productQuery
+      ? await gateway.searchProduct({ query: intent.productQuery })
+      : [];
+    const customer = customerMatches[0] ?? null;
+    const product = productMatches[0] ?? null;
     const quantity = intent.quantity;
     const missing = [
       customer ? null : "cliente",
@@ -212,30 +215,11 @@ export function runDemoAgent(input: {
       };
     }
 
-    const warnings: string[] = [];
-    if (customer.status === "blocked") {
-      warnings.push("Customer is blocked. Human review is required before confirmation.");
-    }
-    if (product.availableStock < quantity) {
-      warnings.push(`${product.sku} has only ${product.availableStock} units available.`);
-    }
-
-    const preview: SalesOrderPreview = {
-      customer,
-      lines: [
-        {
-          productId: product.id,
-          sku: product.sku,
-          name: product.name,
-          quantity,
-          unitPrice: product.unitPrice,
-          total: product.unitPrice * quantity
-        }
-      ],
-      subtotal: product.unitPrice * quantity,
-      warnings,
-      confirmationRequired: true
-    };
+    const stock = await gateway.validateStock({ productId: product.id, quantity });
+    const preview = await gateway.prepareSalesOrder({
+      customerId: customer.id,
+      lines: [{ productId: product.id, quantity }]
+    });
 
     return {
       mode,
@@ -248,7 +232,7 @@ export function runDemoAgent(input: {
       auditEvents: [
         audit("search_customer", `Matched customer ${customer.name}.`),
         audit("search_product", `Matched product ${product.name}.`),
-        audit("validate_stock", `Validated ${quantity} units against ${product.availableStock} in stock.`),
+        audit("validate_stock", `Validated ${quantity} units against ${stock.available} in stock.`),
         audit("prepare_sales_order", `Prepared preview for ${money(preview.subtotal)}.`)
       ],
       lastOrderId: lastOrderId ?? null
@@ -268,16 +252,18 @@ export function runDemoAgent(input: {
   };
 }
 
-export function confirmSalesOrder(preview: SalesOrderPreview, createInvoice: boolean): AgentResponse {
-  const order: SalesOrder = {
-    ...preview,
-    id: createId("so"),
-    status: "confirmed",
-    createdAt: now()
-  };
-  salesOrders.set(order.id, order);
-
-  const invoice = createInvoice ? createInvoiceForOrder(order.id) : null;
+export async function confirmSalesOrder(
+  gateway: CapabilityGateway,
+  preview: SalesOrderPreview,
+  createInvoice: boolean
+): Promise<AgentResponse> {
+  const order = await gateway.createSalesOrder({
+    preview,
+    confirmedByUser: true
+  });
+  const invoice = createInvoice
+    ? await gateway.createConceptInvoice({ salesOrderId: order.id })
+    : null;
 
   return {
     mode: "demo-agent",
@@ -296,45 +282,4 @@ export function confirmSalesOrder(preview: SalesOrderPreview, createInvoice: boo
     ],
     lastOrderId: order.id
   };
-}
-
-function findCustomer(query: string | null) {
-  if (!query) {
-    return null;
-  }
-  const normalized = normalize(query);
-  return (
-    demoCustomers.find((customer) => normalize(customer.name).includes(normalized)) ??
-    demoCustomers.find((customer) => normalize(customer.id).includes(normalized)) ??
-    null
-  );
-}
-
-function findProduct(query: string | null) {
-  if (!query) {
-    return null;
-  }
-  const normalized = normalize(query);
-  return (
-    demoProducts.find((product) => normalize(product.name).includes(normalized)) ??
-    demoProducts.find((product) => normalize(product.sku).includes(normalized)) ??
-    null
-  );
-}
-
-function createInvoiceForOrder(salesOrderId: string) {
-  const order = salesOrders.get(salesOrderId);
-  if (!order) {
-    throw new Error(`Sales order ${salesOrderId} not found.`);
-  }
-  const invoice: ConceptInvoice = {
-    id: createId("ci"),
-    salesOrderId,
-    customerName: order.customer.name,
-    amount: order.subtotal,
-    issuedAt: now(),
-    disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document."
-  };
-  invoices.set(invoice.id, invoice);
-  return invoice;
 }
