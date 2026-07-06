@@ -1,7 +1,20 @@
 "use client";
 
 import type { AgentResponse, AuditEvent, ConceptInvoice, SalesOrder, SalesOrderPreview } from "@anti-erp/shared";
-import { Bot, Check, CircleDollarSign, Clock3, FileText, GitBranch, Send, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  Bot,
+  Check,
+  CircleDollarSign,
+  Clock3,
+  FileText,
+  GitBranch,
+  PackageCheck,
+  ReceiptText,
+  Send,
+  Sparkles,
+  UserCheck
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 type Message = {
@@ -41,6 +54,7 @@ export default function CommandCenterPage() {
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("demo-agent");
+  const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
   const [pending, setPending] = useState(false);
   const [audit, setAudit] = useState<AuditEvent[]>([
     createAudit("session_started", "Command Center opened in demo-safe mode.", "system")
@@ -76,6 +90,7 @@ export default function CommandCenterPage() {
       { id: `user_${Date.now()}`, role: "user", text: command }
     ]);
     setPending(true);
+    setCreateInvoiceAfterConfirm(/\b(nota|invoice|fatura)\b/i.test(command));
     setOrder(null);
     setInvoice(null);
     setInput("");
@@ -129,7 +144,7 @@ export default function CommandCenterPage() {
         },
         body: JSON.stringify({
           preview,
-          createInvoice: input.toLowerCase().includes("nota") || messages.some((message) => message.text.includes("nota"))
+          createInvoice: createInvoiceAfterConfirm
         })
       });
 
@@ -137,6 +152,10 @@ export default function CommandCenterPage() {
         throw new Error(`Confirm request failed with ${response.status}`);
       }
 
+      setAudit((current) => [
+        createAudit("user_approval", "User explicitly confirmed the sales order preview.", "user"),
+        ...current
+      ]);
       applyAgentResponse((await response.json()) as AgentResponse);
       setPreview(null);
     } catch {
@@ -156,6 +175,8 @@ export default function CommandCenterPage() {
       setPending(false);
     }
   }
+
+  const confirmationBlocked = Boolean(preview?.warnings.length);
 
   return (
     <main className="min-h-screen bg-paper text-ink">
@@ -197,6 +218,8 @@ export default function CommandCenterPage() {
                 </div>
               ))}
 
+              <AgentPlan audit={audit} pending={pending} preview={preview} order={order} invoice={invoice} />
+
               {preview ? (
                 <div className="rounded-lg border border-signal bg-white p-4">
                   <div className="flex flex-wrap items-start justify-between gap-4">
@@ -210,21 +233,67 @@ export default function CommandCenterPage() {
                     <button
                       className="inline-flex min-h-11 items-center gap-2 rounded-md bg-signal px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                       onClick={confirmPreview}
-                      disabled={pending}
+                      disabled={pending || confirmationBlocked}
                       title="Confirm and create order"
                     >
                       <Check className="h-5 w-5" aria-hidden="true" />
                       Confirm
                     </button>
                   </div>
+
+                  {preview.warnings.length > 0 ? (
+                    <div className="mt-4 rounded-md border border-coral bg-[#fff3ef] p-3 text-sm text-ink">
+                      <div className="flex items-center gap-2 font-semibold text-coral">
+                        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+                        Confirmation blocked
+                      </div>
+                      <ul className="mt-2 space-y-1">
+                        {preview.warnings.map((warning) => (
+                          <li key={warning}>{warning}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
                   <div className="mt-4 grid gap-3 sm:grid-cols-3">
                     <Metric label="Customer" value={preview.customer.name} />
-                    <Metric
-                      label="Items"
-                      value={preview.lines
-                        .map((line) => `${line.quantity} x ${line.name}`)
-                        .join(", ")}
-                    />
+                    <Metric label="Tax ID" value={preview.customer.taxId} />
+                    <Metric label="City" value={preview.customer.city} />
+                  </div>
+
+                  <div className="mt-4 overflow-hidden rounded-md border border-line">
+                    <div className="grid grid-cols-[1fr_0.55fr_0.7fr_0.7fr] bg-[#fbfaf7] px-3 py-2 text-xs font-semibold uppercase text-steel">
+                      <span>Item</span>
+                      <span>Qty</span>
+                      <span>Unit</span>
+                      <span>Total</span>
+                    </div>
+                    {preview.lines.map((line) => (
+                      <div
+                        key={`${line.productId}-${line.quantity}`}
+                        className="grid grid-cols-[1fr_0.55fr_0.7fr_0.7fr] border-t border-line px-3 py-3 text-sm"
+                      >
+                        <div>
+                          <p className="font-semibold text-ink">{line.name}</p>
+                          <p className="text-xs text-steel">{line.sku}</p>
+                        </div>
+                        <span>{line.quantity}</span>
+                        <span>{money(line.unitPrice)}</span>
+                        <span className="font-semibold">{money(line.total)}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <label className="flex items-center gap-2 text-sm text-ink">
+                      <input
+                        checked={createInvoiceAfterConfirm}
+                        className="h-4 w-4 accent-signal"
+                        onChange={(event) => setCreateInvoiceAfterConfirm(event.target.checked)}
+                        type="checkbox"
+                      />
+                      Generate concept invoice after confirmation
+                    </label>
                     <Metric label="Subtotal" value={money(preview.subtotal)} />
                   </div>
                 </div>
@@ -290,11 +359,11 @@ export default function CommandCenterPage() {
                 <CircleDollarSign className="h-4 w-4" aria-hidden="true" />
                 Result
               </div>
-              {order && invoice ? (
+              {order ? (
                 <div className="space-y-3 text-sm">
                   <Metric label="Sales order" value={order.id} />
-                  <Metric label="Concept invoice" value={invoice.id} />
-                  <Metric label="Amount" value={money(invoice.amount)} />
+                  <Metric label="Concept invoice" value={invoice?.id ?? "Not generated"} />
+                  <Metric label="Amount" value={money(invoice?.amount ?? order.subtotal)} />
                 </div>
               ) : (
                 <p className="text-sm leading-6 text-steel">A confirmed order and concept invoice will appear here.</p>
@@ -330,6 +399,73 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="rounded-md border border-line bg-[#fbfaf7] px-3 py-3">
       <p className="text-xs font-semibold uppercase text-steel">{label}</p>
       <p className="mt-1 break-words text-base font-semibold text-ink">{value}</p>
+    </div>
+  );
+}
+
+function AgentPlan({
+  audit,
+  pending,
+  preview,
+  order,
+  invoice
+}: {
+  audit: AuditEvent[];
+  pending: boolean;
+  preview: SalesOrderPreview | null;
+  order: SalesOrder | null;
+  invoice: ConceptInvoice | null;
+}) {
+  const completedActions = new Set(audit.map((event) => event.action));
+  const blocked = Boolean(preview?.warnings.length);
+  const steps = [
+    { action: "search_customer", label: "Resolve customer", icon: UserCheck },
+    { action: "search_product", label: "Resolve product", icon: PackageCheck },
+    { action: "validate_stock", label: "Validate stock", icon: PackageCheck },
+    { action: "prepare_sales_order", label: "Prepare order preview", icon: FileText },
+    { action: "user_approval", label: "Human approval", icon: Check },
+    { action: "create_sales_order", label: "Create sales order", icon: CircleDollarSign },
+    { action: "create_concept_invoice", label: "Generate concept invoice", icon: ReceiptText }
+  ];
+
+  if (!pending && !preview && !order && !invoice && !steps.some((step) => completedActions.has(step.action))) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-line bg-white p-4">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-steel">
+        <GitBranch className="h-4 w-4" aria-hidden="true" />
+        Agent execution plan
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {steps.map((step) => {
+          const Icon = step.icon;
+          const completed = completedActions.has(step.action);
+          const isApprovalBlocked = step.action === "user_approval" && blocked;
+          const status = completed ? "completed" : isApprovalBlocked ? "blocked" : pending ? "pending" : "waiting";
+
+          return (
+            <div key={step.action} className="flex items-center justify-between rounded-md border border-line px-3 py-2">
+              <span className="flex items-center gap-2 text-sm">
+                <Icon className="h-4 w-4 text-steel" aria-hidden="true" />
+                {step.label}
+              </span>
+              <span
+                className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                  status === "completed"
+                    ? "bg-[#e9f6f3] text-signal"
+                    : status === "blocked"
+                      ? "bg-[#fff3ef] text-coral"
+                      : "bg-[#fbfaf7] text-steel"
+                }`}
+              >
+                {status}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

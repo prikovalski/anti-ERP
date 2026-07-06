@@ -5,6 +5,16 @@ import { getCapabilityGateway, getFallbackCapabilityGateway } from "@/lib/capabi
 
 export async function POST(request: Request) {
   const body = AgentConfirmRequestSchema.parse(await request.json());
+  if (body.preview.warnings.length > 0) {
+    return NextResponse.json(
+      {
+        error: "Confirmation blocked by preview warnings.",
+        warnings: body.preview.warnings
+      },
+      { status: 409 }
+    );
+  }
+
   try {
     const response = await confirmSalesOrder(getCapabilityGateway(), body.preview, body.createInvoice);
     return NextResponse.json(AgentResponseSchema.parse(response));

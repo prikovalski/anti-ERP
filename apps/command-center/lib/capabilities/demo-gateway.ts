@@ -9,13 +9,19 @@ import type { CapabilityGateway } from "./types";
 
 const salesOrders = new Map<string, SalesOrder>();
 const invoices = new Map<string, ConceptInvoice>();
+let nextSalesOrderNumber = 1001;
+let nextConceptInvoiceNumber = 5001;
 
 function now() {
   return new Date().toISOString();
 }
 
-function createId(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+function createSalesOrderId() {
+  return `SO-${nextSalesOrderNumber++}`;
+}
+
+function createConceptInvoiceId() {
+  return `CI-${nextConceptInvoiceNumber++}`;
 }
 
 function normalize(value: string) {
@@ -99,7 +105,7 @@ export class DemoCapabilityGateway implements CapabilityGateway {
   async createSalesOrder(input: { preview: SalesOrderPreview; confirmedByUser: true }) {
     const order: SalesOrder = {
       ...input.preview,
-      id: createId("so"),
+      id: createSalesOrderId(),
       status: "confirmed",
       createdAt: now()
     };
@@ -114,7 +120,7 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     }
 
     const invoice: ConceptInvoice = {
-      id: createId("ci"),
+      id: createConceptInvoiceId(),
       salesOrderId: order.id,
       customerName: order.customer.name,
       amount: order.subtotal,

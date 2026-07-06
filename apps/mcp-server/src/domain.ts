@@ -15,13 +15,24 @@ import { customers, products } from "./seed.js";
 const auditEvents: AuditEvent[] = [];
 const salesOrders = new Map<string, SalesOrder>();
 const conceptInvoices = new Map<string, ConceptInvoice>();
+let nextAuditNumber = 1;
+let nextSalesOrderNumber = 1001;
+let nextConceptInvoiceNumber = 5001;
 
 function now() {
   return new Date().toISOString();
 }
 
 function createId(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${nextAuditNumber++}`;
+}
+
+function createSalesOrderId() {
+  return `SO-${nextSalesOrderNumber++}`;
+}
+
+function createConceptInvoiceId() {
+  return `CI-${nextConceptInvoiceNumber++}`;
 }
 
 function audit(action: string, summary: string, metadata?: Record<string, unknown>) {
@@ -130,7 +141,7 @@ export function createSalesOrder(input: unknown) {
   const { preview } = CreateSalesOrderInputSchema.parse(input);
   const order: SalesOrder = {
     ...preview,
-    id: createId("so"),
+    id: createSalesOrderId(),
     status: "confirmed",
     createdAt: now()
   };
@@ -149,7 +160,7 @@ export function createConceptInvoice(input: unknown) {
     throw new Error(`Sales order ${salesOrderId} not found.`);
   }
   const invoice: ConceptInvoice = {
-    id: createId("ci"),
+    id: createConceptInvoiceId(),
     salesOrderId,
     customerName: order.customer.name,
     amount: order.subtotal,
