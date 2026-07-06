@@ -1,0 +1,27 @@
+{
+  "name": "anti-erp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The first MCP-native AI ERP experiment.",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "mcp:dev": "pnpm --filter @anti-erp/mcp-server dev",
+    "command-center:dev": "pnpm --filter @anti-erp/command-center dev"
+  },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "erp",
+    "nextjs",
+    "openai"
+  ],
+  "license": "MIT",
+  "packageManager": "pnpm@9.15.4",
+  "devDependencies": {
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  }
+}

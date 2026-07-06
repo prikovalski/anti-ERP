@@ -1,0 +1,79 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Customer {
+  id          String       @id @default(cuid())
+  name        String
+  taxId       String       @unique
+  city        String
+  status      CustomerStatus @default(active)
+  salesOrders SalesOrder[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model Product {
+  id             String           @id @default(cuid())
+  sku            String           @unique
+  name           String
+  unitPriceCents Int
+  availableStock Int
+  salesOrderLines SalesOrderLine[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model SalesOrder {
+  id        String           @id @default(cuid())
+  customerId String
+  customer  Customer         @relation(fields: [customerId], references: [id])
+  status    SalesOrderStatus @default(confirmed)
+  lines     SalesOrderLine[]
+  invoices  ConceptInvoice[]
+  createdAt DateTime         @default(now())
+}
+
+model SalesOrderLine {
+  id              String     @id @default(cuid())
+  salesOrderId    String
+  salesOrder      SalesOrder @relation(fields: [salesOrderId], references: [id])
+  productId       String
+  product         Product    @relation(fields: [productId], references: [id])
+  quantity        Int
+  unitPriceCents  Int
+  totalCents      Int
+}
+
+model ConceptInvoice {
+  id           String     @id @default(cuid())
+  salesOrderId String
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
+  amountCents  Int
+  disclaimer   String
+  issuedAt     DateTime   @default(now())
+}
+
+model AuditEvent {
+  id        String   @id @default(cuid())
+  actor     String
+  action    String
+  summary   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+}
+
+enum CustomerStatus {
+  active
+  blocked
+}
+
+enum SalesOrderStatus {
+  draft
+  confirmed
+}
