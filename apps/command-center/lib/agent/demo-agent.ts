@@ -38,14 +38,33 @@ function money(value: number) {
   }).format(value);
 }
 
+function cleanCatalogName(value: string) {
+  return value.trim().replace(/\s+/g, " ").replace(/[.!?]+$/g, "");
+}
+
+function extractCatalogCommand(message: string) {
+  const match = message.match(/\b(?:cadastre|cadastrar|crie|criar|registre|registrar|adicione|adicionar)\s+(?:o\s+|a\s+|um\s+|uma\s+)?(cliente|produto|fornecedor)\s+(.+)$/i);
+  if (!match) {
+    return null;
+  }
+  const kind = match[1] ?? "";
+  const name = match[2] ?? "";
+  const normalizedKind = normalize(kind);
+  return {
+    kind: normalizedKind === "fornecedor" ? "supplier" : normalizedKind === "cliente" ? "customer" : "product",
+    name: cleanCatalogName(name)
+  };
+}
+
 export function parseIntentLocally(message: string): AgentIntent {
   const normalized = normalize(message);
+  const catalogCommand = extractCatalogCommand(message);
   const quantityMatch = normalized.match(/(\d+)\s+(notebook|notebooks|monitor|monitores|teclado|teclados)/);
   const mentionsInvoice = /\b(nota|invoice|fatura)\b/.test(normalized);
   const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
   const asksTraditionalFlow = /\b(tradicional|erp classico|erp tradicional|compar)/.test(normalized);
   const asksList = /\b(liste|listar|recentes|hoje|criados)\b/.test(normalized);
-  const asksAnalytics = /\b(quantos|quanto|vendemos|vendidos|vendeu|saindo|saida|comprou|compraram|faturamento|receita)\b/.test(normalized);
+  const asksAnalytics = /\b(quantos|quanto|qual|ranking|vendemos|vendidos|vendeu|saindo|saida|comprou|compraram|faturamento|receita)\b/.test(normalized);
   const dateRange = normalized.includes("semana")
     ? "last_7_days"
     : normalized.includes("mes")
@@ -53,6 +72,24 @@ export function parseIntentLocally(message: string): AgentIntent {
       : normalized.includes("hoje")
         ? "today"
         : "all_time";
+
+  if (catalogCommand?.name) {
+    return {
+      intent:
+        catalogCommand.kind === "supplier"
+          ? "create_supplier"
+          : catalogCommand.kind === "customer"
+            ? "create_customer"
+            : "create_product",
+      customerQuery: null,
+      productQuery: catalogCommand.kind === "product" ? catalogCommand.name : null,
+      catalogName: catalogCommand.name,
+      quantity: null,
+      wantsInvoice: false,
+      analytics: null,
+      confidence: 0.94
+    };
+  }
 
   if (asksAnalytics) {
     return {
@@ -71,18 +108,21 @@ export function parseIntentLocally(message: string): AgentIntent {
           : normalized.includes("notebook")
             ? "notebook"
             : null,
+      catalogName: null,
       quantity: null,
       wantsInvoice: false,
       analytics: {
-        metric: /\b(quanto|faturamento|receita|vendemos)\b/.test(normalized) && !/\bquantos\b/.test(normalized)
+        metric: /\b(quanto|faturamento|receita|vendemos|comprou|compraram)\b/.test(normalized) && !/\bquantos\b/.test(normalized)
           ? "revenue"
           : /\b(pedidos|pedido)\b/.test(normalized)
             ? "order_count"
             : "units_sold",
-        groupBy: normalized.includes("produto")
+        groupBy: normalized.includes("produto") || normalized.includes("produtos")
           ? "product"
-          : normalized.includes("cliente")
+          : normalized.includes("cliente") || normalized.includes("clientes")
             ? "customer"
+            : normalized.includes("dia")
+              ? "day"
             : null,
         dateRange
       },
@@ -95,6 +135,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       intent: "traditional_flow",
       customerQuery: null,
       productQuery: null,
+      catalogName: null,
       quantity: null,
       wantsInvoice: false,
       analytics: null,
@@ -107,6 +148,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       intent: "list_orders",
       customerQuery: null,
       productQuery: null,
+      catalogName: null,
       quantity: null,
       wantsInvoice: false,
       analytics: null,
@@ -119,6 +161,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       intent: "create_invoice",
       customerQuery: null,
       productQuery: null,
+      catalogName: null,
       quantity: null,
       wantsInvoice: true,
       analytics: null,
@@ -143,6 +186,7 @@ export function parseIntentLocally(message: string): AgentIntent {
           : normalized.includes("notebook")
             ? "notebook"
             : null,
+      catalogName: null,
       quantity: quantityMatch ? Number(quantityMatch[1]) : null,
       wantsInvoice: mentionsInvoice,
       analytics: null,
@@ -154,6 +198,7 @@ export function parseIntentLocally(message: string): AgentIntent {
     intent: "unknown",
     customerQuery: null,
     productQuery: null,
+    catalogName: null,
     quantity: null,
     wantsInvoice: false,
     analytics: null,
@@ -169,6 +214,99 @@ export async function runDemoAgent(input: {
   lastOrderId?: string;
 }): Promise<AgentResponse> {
   const { gateway, intent, lastOrderId, mode } = input;
+
+  if (intent.intent === "create_customer") {
+    if (!intent.catalogName) {
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: "Consigo cadastrar o cliente, mas preciso do nome."
+        },
+        auditEvents: [audit("catalog_name_required", "Customer creation blocked without a name.", "agent")],
+        lastOrderId: lastOrderId ?? null
+      };
+    }
+
+    try {
+      const customer = await gateway.createCustomer({ name: intent.catalogName });
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: `Cliente ${customer.name} cadastrado com status ${customer.status}. Cidade: ${customer.city}.`
+        },
+        auditEvents: [audit("create_customer", `Created customer ${customer.name}.`)],
+        lastOrderId: lastOrderId ?? null
+      };
+    } catch (error) {
+      return createCatalogErrorResponse(mode, lastOrderId, error, "cliente");
+    }
+  }
+
+  if (intent.intent === "create_product") {
+    if (!intent.catalogName) {
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: "Consigo cadastrar o produto, mas preciso do nome."
+        },
+        auditEvents: [audit("catalog_name_required", "Product creation blocked without a name.", "agent")],
+        lastOrderId: lastOrderId ?? null
+      };
+    }
+
+    try {
+      const product = await gateway.createProduct({ name: intent.catalogName });
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: `Produto ${product.name} cadastrado. Ele ficou com SKU ${product.sku}, preço ${money(product.unitPrice)} e estoque ${product.availableStock}.`
+        },
+        auditEvents: [audit("create_product", `Created product ${product.name}.`)],
+        lastOrderId: lastOrderId ?? null
+      };
+    } catch (error) {
+      return createCatalogErrorResponse(mode, lastOrderId, error, "produto");
+    }
+  }
+
+  if (intent.intent === "create_supplier") {
+    if (!intent.catalogName) {
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: "Consigo cadastrar o fornecedor, mas preciso do nome."
+        },
+        auditEvents: [audit("catalog_name_required", "Supplier creation blocked without a name.", "agent")],
+        lastOrderId: lastOrderId ?? null
+      };
+    }
+
+    try {
+      const supplier = await gateway.createSupplier({ name: intent.catalogName });
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: `Fornecedor ${supplier.name} cadastrado com status ${supplier.status}.`
+        },
+        auditEvents: [audit("create_supplier", `Created supplier ${supplier.name}.`)],
+        lastOrderId: lastOrderId ?? null
+      };
+    } catch (error) {
+      return createCatalogErrorResponse(mode, lastOrderId, error, "fornecedor");
+    }
+  }
 
   if (intent.intent === "traditional_flow") {
     await gateway.getTraditionalErpFlow();
@@ -334,9 +472,36 @@ export async function runDemoAgent(input: {
       id: createId("msg"),
       role: "agent",
       text:
-        "Posso criar pedidos, gerar nota conceitual para um pedido confirmado, listar pedidos recentes ou comparar com um ERP tradicional."
+        "Posso cadastrar clientes, produtos e fornecedores, criar pedidos, gerar nota conceitual para um pedido confirmado, listar pedidos recentes ou comparar com um ERP tradicional."
     },
     auditEvents: [audit("unknown_intent", "Agent could not map the message to a supported MCP capability.", "agent")],
+    lastOrderId: lastOrderId ?? null
+  };
+}
+
+function createCatalogErrorResponse(
+  mode: AgentResponse["mode"],
+  lastOrderId: string | undefined,
+  error: unknown,
+  label: "cliente" | "produto" | "fornecedor"
+): AgentResponse {
+  const duplicate = error instanceof Error && /already exists/i.test(error.message);
+  return {
+    mode,
+    message: {
+      id: createId("msg"),
+      role: "agent",
+      text: duplicate
+        ? `Nao cadastrei o ${label}: ja existe um registro com esse nome.`
+        : `Nao consegui cadastrar o ${label} agora. Nenhuma criacao foi aplicada.`
+    },
+    auditEvents: [
+      audit(
+        duplicate ? "catalog_duplicate_blocked" : "catalog_creation_failed",
+        duplicate ? `Blocked duplicate ${label} creation.` : `Failed to create ${label}.`,
+        "agent"
+      )
+    ],
     lastOrderId: lastOrderId ?? null
   };
 }

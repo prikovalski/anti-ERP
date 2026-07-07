@@ -7,10 +7,14 @@ import type {
   Customer,
   Product,
   SalesOrder,
-  SalesOrderPreview
+  SalesOrderPreview,
+  Supplier
 } from "@anti-erp/shared";
 
 export interface CapabilityGateway {
+  createCustomer(input: { name: string }): Promise<Customer>;
+  createProduct(input: { name: string }): Promise<Product>;
+  createSupplier(input: { name: string }): Promise<Supplier>;
   searchCustomer(input: { query: string }): Promise<Customer[]>;
   searchProduct(input: { query: string }): Promise<Product[]>;
   validateStock(input: { productId: string; quantity: number }): Promise<{

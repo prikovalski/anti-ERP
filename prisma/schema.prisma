@@ -29,6 +29,14 @@ model Product {
   updatedAt      DateTime         @updatedAt
 }
 
+model Supplier {
+  id        String         @id @default(cuid())
+  name      String
+  status    SupplierStatus @default(active)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+}
+
 model SalesOrder {
   id        String           @id
   customerId String
@@ -75,6 +83,11 @@ model AuditEvent {
 }
 
 enum CustomerStatus {
+  active
+  blocked
+}
+
+enum SupplierStatus {
   active
   blocked
 }

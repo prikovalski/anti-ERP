@@ -1,9 +1,20 @@
 import { z } from "zod";
 
 const IntentSchema = z.object({
-  intent: z.enum(["create_order", "create_invoice", "list_orders", "traditional_flow", "analytics_query", "unknown"]),
+  intent: z.enum([
+    "create_order",
+    "create_invoice",
+    "create_customer",
+    "create_product",
+    "create_supplier",
+    "list_orders",
+    "traditional_flow",
+    "analytics_query",
+    "unknown"
+  ]),
   customerQuery: z.string().nullable(),
   productQuery: z.string().nullable(),
+  catalogName: z.string().nullable().optional(),
   quantity: z.number().int().positive().nullable(),
   wantsInvoice: z.boolean(),
   analytics: z.object({
@@ -37,7 +48,7 @@ export async function inferIntentWithOpenRouter(message: string): Promise<AgentI
         {
           role: "system",
           content:
-            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|list_orders|traditional_flow|analytics_query|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. Never translate enum values. Never execute actions."
+            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|list_orders|traditional_flow|analytics_query|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For questions like ranking customers/products, use analytics_query with groupBy. Never translate enum values. Never execute actions."
         },
         {
           role: "user",
@@ -86,15 +97,28 @@ function normalizePlannerPayload(raw: unknown, message: string) {
     analytics.dateRange = mapDateRange(analytics.dateRange);
   }
 
+  const inferredCatalogName = inferCatalogName(message);
+
   return {
     ...payload,
     customerQuery: typeof payload.customerQuery === "string" ? payload.customerQuery : inferCustomerQuery(message),
     productQuery: typeof payload.productQuery === "string" ? payload.productQuery : inferProductQuery(message),
+    catalogName: inferredCatalogName ?? (typeof payload.catalogName === "string" ? cleanCatalogName(payload.catalogName) : null),
     quantity: normalizeQuantity(payload.quantity),
     wantsInvoice: Boolean(payload.wantsInvoice),
     analytics,
     confidence: normalizeConfidence(payload.confidence)
   };
+}
+
+function cleanCatalogName(value: string) {
+  const cleaned = value.trim().replace(/\s+/g, " ").replace(/[.!?]+$/g, "");
+  return cleaned || null;
+}
+
+function inferCatalogName(message: string) {
+  const match = message.match(/\b(?:cadastre|cadastrar|crie|criar|registre|registrar|adicione|adicionar)\s+(?:o\s+|a\s+|um\s+|uma\s+)?(?:cliente|produto|fornecedor)\s+(.+)$/i);
+  return match ? cleanCatalogName(match[1] ?? "") : null;
 }
 
 function inferProductQuery(message: string) {

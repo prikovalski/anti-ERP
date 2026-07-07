@@ -16,6 +16,12 @@ export const ProductSchema = z.object({
   availableStock: z.number().int().nonnegative()
 });
 
+export const SupplierSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  status: z.enum(["active", "blocked"])
+});
+
 export const SalesOrderLineSchema = z.object({
   productId: z.string(),
   sku: z.string(),
@@ -65,6 +71,18 @@ export const SearchProductInputSchema = z.object({
   query: z.string().min(2)
 });
 
+export const CreateCustomerInputSchema = z.object({
+  name: z.string().trim().min(2)
+});
+
+export const CreateProductInputSchema = z.object({
+  name: z.string().trim().min(2)
+});
+
+export const CreateSupplierInputSchema = z.object({
+  name: z.string().trim().min(2)
+});
+
 export const ValidateStockInputSchema = z.object({
   productId: z.string(),
   quantity: z.number().int().positive()
@@ -99,10 +117,33 @@ export const AnalyticsDateRangeSchema = z.enum(["today", "last_7_days", "month_t
 
 export const AnalyticsGroupBySchema = z.enum(["product", "customer", "day"]);
 
+export const QuerySalesMetricsInputSchema = z.object({
+  metric: AnalyticsMetricSchema,
+  productQuery: z.string().nullable().optional(),
+  customerQuery: z.string().nullable().optional(),
+  dateRange: AnalyticsDateRangeSchema,
+  groupBy: AnalyticsGroupBySchema.nullable().optional()
+});
+
+export const AnalyticsEntitySchema = z.enum(["sales_orders", "sales_order_lines", "customers", "products", "concept_invoices"]);
+
+export const AnalyticsFilterSchema = z.object({
+  label: z.string(),
+  value: z.string()
+});
+
 export const AnalyticsResultSchema = z.object({
   metric: AnalyticsMetricSchema,
   value: z.number(),
   label: z.string(),
+  query: z.object({
+    capability: z.literal("query_sales_metrics"),
+    entities: z.array(AnalyticsEntitySchema),
+    filters: z.array(AnalyticsFilterSchema),
+    groupBy: AnalyticsGroupBySchema.nullable(),
+    dateRange: AnalyticsDateRangeSchema,
+    dataSource: z.enum(["demo-memory", "mcp-memory", "postgres"])
+  }),
   rows: z.array(
     z.object({
       label: z.string(),
@@ -188,6 +229,10 @@ export const demoProducts: Product[] = [
 
 export type Customer = z.infer<typeof CustomerSchema>;
 export type Product = z.infer<typeof ProductSchema>;
+export type Supplier = z.infer<typeof SupplierSchema>;
+export type CreateCustomerInput = z.infer<typeof CreateCustomerInputSchema>;
+export type CreateProductInput = z.infer<typeof CreateProductInputSchema>;
+export type CreateSupplierInput = z.infer<typeof CreateSupplierInputSchema>;
 export type SalesOrderLine = z.infer<typeof SalesOrderLineSchema>;
 export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;
@@ -196,6 +241,9 @@ export type AuditEvent = z.infer<typeof AuditEventSchema>;
 export type AnalyticsMetric = z.infer<typeof AnalyticsMetricSchema>;
 export type AnalyticsDateRange = z.infer<typeof AnalyticsDateRangeSchema>;
 export type AnalyticsGroupBy = z.infer<typeof AnalyticsGroupBySchema>;
+export type QuerySalesMetricsInput = z.infer<typeof QuerySalesMetricsInputSchema>;
+export type AnalyticsEntity = z.infer<typeof AnalyticsEntitySchema>;
+export type AnalyticsFilter = z.infer<typeof AnalyticsFilterSchema>;
 export type AnalyticsResult = z.infer<typeof AnalyticsResultSchema>;
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 export type AgentRequest = z.infer<typeof AgentRequestSchema>;

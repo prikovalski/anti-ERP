@@ -55,6 +55,10 @@ function formatAnalyticsRowValue(result: AnalyticsResult, value: number) {
   return result.metric === "revenue" ? money(value) : String(value);
 }
 
+function formatAnalyticsGroupBy(result: AnalyticsResult) {
+  return result.query.groupBy ? result.query.groupBy : "none";
+}
+
 export default function CommandCenterPage() {
   const [input, setInput] = useState("Crie um pedido para Northstar com 10 notebooks e gere a nota.");
   const [messages, setMessages] = useState<Message[]>([
@@ -79,8 +83,13 @@ export default function CommandCenterPage() {
   const suggestions = useMemo(
     () => [
       "Crie um pedido para Northstar com 10 notebooks",
+      "Cadastre o cliente Atlas Retail",
+      "Cadastre o produto Mouse",
+      "Cadastre o fornecedor Delta Supplies",
       "Quantos monitores foram vendidos hoje?",
       "Quanto vendemos hoje?",
+      "Qual cliente comprou mais este mês?",
+      "Quanto vendemos por produto?",
       "Gere uma nota para o último pedido",
       "Explique como isso seria feito em um ERP tradicional"
     ],
@@ -387,6 +396,28 @@ export default function CommandCenterPage() {
               ) : analyticsResult ? (
                 <div className="space-y-3 text-sm">
                   <Metric label={analyticsResult.label} value={formatAnalyticsValue(analyticsResult)} />
+                  <div className="rounded-md border border-line bg-[#fbfaf7] px-3 py-3">
+                    <p className="text-xs font-semibold uppercase text-steel">Interpreted query</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
+                        {analyticsResult.query.capability}
+                      </span>
+                      <span className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
+                        source: {analyticsResult.query.dataSource}
+                      </span>
+                      <span className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
+                        group: {formatAnalyticsGroupBy(analyticsResult)}
+                      </span>
+                      {analyticsResult.query.filters.map((filter) => (
+                        <span key={`${filter.label}-${filter.value}`} className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
+                          {filter.label}: {filter.value}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-steel">
+                      Entities: {analyticsResult.query.entities.join(", ")}
+                    </p>
+                  </div>
                   {analyticsResult.rows.length > 0 ? (
                     <div className="overflow-hidden rounded-md border border-line">
                       {analyticsResult.rows.map((row) => (

@@ -2,6 +2,8 @@ import {
   ConceptInvoiceSchema,
   CustomerSchema,
   ProductSchema,
+  SupplierSchema,
+  AnalyticsResultSchema,
   SalesOrderPreviewSchema,
   SalesOrderSchema
 } from "@anti-erp/shared";
@@ -56,6 +58,18 @@ async function callTool<T>(name: string, args: Record<string, unknown>, schema: 
 }
 
 export class McpCapabilityGateway implements CapabilityGateway {
+  async createCustomer(input: { name: string }) {
+    return callTool("create_customer", input, CustomerSchema);
+  }
+
+  async createProduct(input: { name: string }) {
+    return callTool("create_product", input, ProductSchema);
+  }
+
+  async createSupplier(input: { name: string }) {
+    return callTool("create_supplier", input, SupplierSchema);
+  }
+
   async searchCustomer(input: { query: string }) {
     return callTool("search_customer", input, z.array(CustomerSchema));
   }
@@ -121,20 +135,6 @@ export class McpCapabilityGateway implements CapabilityGateway {
     dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
     groupBy?: "product" | "customer" | "day" | null;
   }) {
-    return callTool(
-      "query_sales_metrics",
-      input,
-      z.object({
-        metric: z.enum(["units_sold", "revenue", "order_count"]),
-        value: z.number(),
-        label: z.string(),
-        rows: z.array(
-          z.object({
-            label: z.string(),
-            value: z.number()
-          })
-        )
-      })
-    );
+    return callTool("query_sales_metrics", input, AnalyticsResultSchema);
   }
 }

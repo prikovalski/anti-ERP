@@ -1,10 +1,12 @@
 import {
+  AnalyticsResult,
   ConceptInvoice,
   Customer,
   Product,
   SalesOrder,
   SalesOrderLine,
   SalesOrderPreview,
+  Supplier,
   demoCustomers,
   demoProducts
 } from "@anti-erp/shared";
@@ -32,6 +34,12 @@ type DbProduct = {
   availableStock: number;
 };
 
+type DbSupplier = {
+  id: string;
+  name: string;
+  status: "active" | "blocked";
+};
+
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
 };
@@ -55,9 +63,26 @@ function ensureSeeded() {
 
 function normalize(value: string) {
   return value
+    .trim()
+    .replace(/\s+/g, " ")
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function cleanName(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function slugify(value: string) {
+  return normalize(value)
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 28);
+}
+
+function randomToken() {
+  return Math.random().toString(36).slice(2, 8);
 }
 
 function toCents(value: number) {
@@ -92,6 +117,14 @@ function mapProduct(product: {
     unitPrice: fromCents(product.unitPriceCents),
     availableStock: product.availableStock
   };
+}
+
+function mapSupplier(supplier: {
+  id: string;
+  name: string;
+  status: "active" | "blocked";
+}): Supplier {
+  return supplier;
 }
 
 function mapSalesOrder(order: {
@@ -221,6 +254,76 @@ async function nextBusinessId(
 }
 
 export class PrismaCapabilityGateway implements CapabilityGateway {
+  async createCustomer(input: { name: string }) {
+    await ensureSeeded();
+    const name = cleanName(input.name);
+    const normalizedName = normalize(name);
+    const customers = (await prisma.customer.findMany()) as DbCustomer[];
+    const existing = customers.find((customer) => normalize(customer.name) === normalizedName);
+    if (existing) {
+      throw new Error(`Customer "${existing.name}" already exists.`);
+    }
+
+    const customer = (await prisma.customer.create({
+      data: {
+        id: `cus_${slugify(name) || "customer"}_${randomToken()}`,
+        name,
+        taxId: `DEMO-CUS-${Date.now()}-${randomToken().toUpperCase()}`,
+        city: "Nao informada",
+        status: "active"
+      }
+    })) as DbCustomer;
+
+    await audit("create_customer", `Created customer ${customer.name}`, { customerId: customer.id });
+    return mapCustomer(customer);
+  }
+
+  async createProduct(input: { name: string }) {
+    await ensureSeeded();
+    const name = cleanName(input.name);
+    const normalizedName = normalize(name);
+    const products = (await prisma.product.findMany()) as DbProduct[];
+    const existing = products.find((product) => normalize(product.name) === normalizedName);
+    if (existing) {
+      throw new Error(`Product "${existing.name}" already exists.`);
+    }
+
+    const product = (await prisma.product.create({
+      data: {
+        id: `prd_${slugify(name) || "product"}_${randomToken()}`,
+        sku: `SKU-${slugify(name).replaceAll("_", "-").toUpperCase() || "ITEM"}-${randomToken().toUpperCase()}`,
+        name,
+        unitPriceCents: 0,
+        availableStock: 0
+      }
+    })) as DbProduct;
+
+    await audit("create_product", `Created product ${product.name}`, { productId: product.id });
+    return mapProduct(product);
+  }
+
+  async createSupplier(input: { name: string }) {
+    await ensureSeeded();
+    const name = cleanName(input.name);
+    const normalizedName = normalize(name);
+    const suppliers = (await prisma.supplier.findMany()) as DbSupplier[];
+    const existing = suppliers.find((supplier) => normalize(supplier.name) === normalizedName);
+    if (existing) {
+      throw new Error(`Supplier "${existing.name}" already exists.`);
+    }
+
+    const supplier = (await prisma.supplier.create({
+      data: {
+        id: `sup_${slugify(name) || "supplier"}_${randomToken()}`,
+        name,
+        status: "active"
+      }
+    })) as DbSupplier;
+
+    await audit("create_supplier", `Created supplier ${supplier.name}`, { supplierId: supplier.id });
+    return mapSupplier(supplier);
+  }
+
   async searchCustomer(input: { query: string }) {
     await ensureSeeded();
     const query = normalize(input.query);
@@ -527,8 +630,12 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       metric: input.metric,
       value,
       label: buildMetricLabel(input.metric, input.productQuery, input.dateRange),
+      query: buildAnalyticsQuery({
+        ...input,
+        dataSource: "postgres"
+      }),
       rows
-    };
+    } satisfies AnalyticsResult;
   }
 }
 
@@ -560,6 +667,29 @@ function buildMetricLabel(metric: string, productQuery: string | null | undefine
   const subject = productQuery ? productQuery : "sales";
   const period = dateRange === "today" ? "today" : dateRange.replaceAll("_", " ");
   return `${metric.replaceAll("_", " ")} for ${subject} ${period}`;
+}
+
+function buildAnalyticsQuery(input: {
+  productQuery?: string | null;
+  customerQuery?: string | null;
+  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  groupBy?: "product" | "customer" | "day" | null;
+  dataSource: "postgres";
+}) {
+  const entities: AnalyticsResult["query"]["entities"] = ["sales_orders", "sales_order_lines", "customers", "products"];
+
+  return {
+    capability: "query_sales_metrics" as const,
+    entities,
+    filters: [
+      { label: "period", value: input.dateRange.replaceAll("_", " ") },
+      input.productQuery ? { label: "product", value: input.productQuery } : null,
+      input.customerQuery ? { label: "customer", value: input.customerQuery } : null
+    ].filter((filter): filter is { label: string; value: string } => Boolean(filter)),
+    groupBy: input.groupBy ?? null,
+    dateRange: input.dateRange,
+    dataSource: input.dataSource
+  };
 }
 
 function buildMetricRows(
