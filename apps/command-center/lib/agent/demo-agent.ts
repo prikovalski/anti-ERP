@@ -56,9 +56,45 @@ function extractCatalogCommand(message: string) {
   };
 }
 
+function parsePtNumber(value: string) {
+  const cleaned = value
+    .replace(/r\$/gi, "")
+    .replace(/\breais?\b/gi, "")
+    .replace(/\bunidades?\b/gi, "")
+    .replace(/[^\d.,-]/g, "")
+    .trim();
+  if (!cleaned) {
+    return null;
+  }
+  const normalized = cleaned.includes(",")
+    ? cleaned.replace(/\./g, "").replace(",", ".")
+    : cleaned;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function extractProductUpdateCommand(message: string) {
+  const match = message.match(/\b(?:atualize|atualizar|altere|alterar|mude|mudar|defina|definir|ajuste|ajustar)\s+(?:o\s+|a\s+)?(pre[cç]o|valor|estoque)\s+(?:do\s+|da\s+)?produto\s+(.+?)\s+(?:para|pra|por|em)\s+(.+)$/i);
+  if (!match) {
+    return null;
+  }
+  const field = normalize(match[1] ?? "");
+  const productQuery = cleanCatalogName(match[2] ?? "");
+  const numberValue = parsePtNumber(match[3] ?? "");
+  if (!productQuery || numberValue === null) {
+    return null;
+  }
+  return {
+    productQuery,
+    unitPrice: field === "estoque" ? null : numberValue,
+    availableStock: field === "estoque" ? Math.trunc(numberValue) : null
+  };
+}
+
 export function parseIntentLocally(message: string): AgentIntent {
   const normalized = normalize(message);
   const catalogCommand = extractCatalogCommand(message);
+  const productUpdate = extractProductUpdateCommand(message);
   const quantityMatch = normalized.match(/(\d+)\s+(notebook|notebooks|monitor|monitores|teclado|teclados)/);
   const mentionsInvoice = /\b(nota|invoice|fatura)\b/.test(normalized);
   const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
@@ -73,6 +109,20 @@ export function parseIntentLocally(message: string): AgentIntent {
         ? "today"
         : "all_time";
 
+  if (productUpdate) {
+    return {
+      intent: "update_product",
+      customerQuery: null,
+      productQuery: productUpdate.productQuery,
+      catalogName: null,
+      productUpdate,
+      quantity: null,
+      wantsInvoice: false,
+      analytics: null,
+      confidence: 0.94
+    };
+  }
+
   if (catalogCommand?.name) {
     return {
       intent:
@@ -84,6 +134,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       customerQuery: null,
       productQuery: catalogCommand.kind === "product" ? catalogCommand.name : null,
       catalogName: catalogCommand.name,
+      productUpdate: null,
       quantity: null,
       wantsInvoice: false,
       analytics: null,
@@ -109,6 +160,7 @@ export function parseIntentLocally(message: string): AgentIntent {
             ? "notebook"
             : null,
       catalogName: null,
+      productUpdate: null,
       quantity: null,
       wantsInvoice: false,
       analytics: {
@@ -136,6 +188,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       customerQuery: null,
       productQuery: null,
       catalogName: null,
+      productUpdate: null,
       quantity: null,
       wantsInvoice: false,
       analytics: null,
@@ -149,6 +202,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       customerQuery: null,
       productQuery: null,
       catalogName: null,
+      productUpdate: null,
       quantity: null,
       wantsInvoice: false,
       analytics: null,
@@ -162,6 +216,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       customerQuery: null,
       productQuery: null,
       catalogName: null,
+      productUpdate: null,
       quantity: null,
       wantsInvoice: true,
       analytics: null,
@@ -187,6 +242,7 @@ export function parseIntentLocally(message: string): AgentIntent {
             ? "notebook"
             : null,
       catalogName: null,
+      productUpdate: null,
       quantity: quantityMatch ? Number(quantityMatch[1]) : null,
       wantsInvoice: mentionsInvoice,
       analytics: null,
@@ -199,6 +255,7 @@ export function parseIntentLocally(message: string): AgentIntent {
     customerQuery: null,
     productQuery: null,
     catalogName: null,
+    productUpdate: null,
     quantity: null,
     wantsInvoice: false,
     analytics: null,
@@ -214,6 +271,61 @@ export async function runDemoAgent(input: {
   lastOrderId?: string;
 }): Promise<AgentResponse> {
   const { gateway, intent, lastOrderId, mode } = input;
+
+  if (intent.intent === "update_product") {
+    const update = intent.productUpdate;
+    if (!update?.productQuery || (update.unitPrice === null && update.availableStock === null)) {
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: "Consigo atualizar o produto, mas preciso saber o produto e o novo preço ou estoque."
+        },
+        auditEvents: [audit("product_update_context_required", "Product update blocked without product or field value.", "agent")],
+        lastOrderId: lastOrderId ?? null
+      };
+    }
+
+    const matches = await gateway.searchProduct({ query: update.productQuery });
+    const product = matches[0] ?? null;
+    if (!product) {
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: `Nao encontrei um produto chamado ${update.productQuery}.`
+        },
+        auditEvents: [audit("update_product_not_found", `Product ${update.productQuery} was not found.`, "agent")],
+        lastOrderId: lastOrderId ?? null
+      };
+    }
+
+    const updatedProduct = await gateway.updateProduct({
+      productId: product.id,
+      unitPrice: update.unitPrice,
+      availableStock: update.availableStock
+    });
+    const changedFields = [
+      update.unitPrice !== null ? `preço ${money(updatedProduct.unitPrice)}` : null,
+      update.availableStock !== null ? `estoque ${updatedProduct.availableStock}` : null
+    ].filter(Boolean);
+
+    return {
+      mode,
+      message: {
+        id: createId("msg"),
+        role: "agent",
+        text: `Produto ${updatedProduct.name} atualizado: ${changedFields.join(", ")}.`
+      },
+      auditEvents: [
+        audit("search_product", `Matched product ${updatedProduct.name}.`),
+        audit("update_product", `Updated product ${updatedProduct.name}.`)
+      ],
+      lastOrderId: lastOrderId ?? null
+    };
+  }
 
   if (intent.intent === "create_customer") {
     if (!intent.catalogName) {

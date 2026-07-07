@@ -7,6 +7,7 @@ const IntentSchema = z.object({
     "create_customer",
     "create_product",
     "create_supplier",
+    "update_product",
     "list_orders",
     "traditional_flow",
     "analytics_query",
@@ -15,6 +16,11 @@ const IntentSchema = z.object({
   customerQuery: z.string().nullable(),
   productQuery: z.string().nullable(),
   catalogName: z.string().nullable().optional(),
+  productUpdate: z.object({
+    productQuery: z.string().nullable(),
+    unitPrice: z.number().nonnegative().nullable(),
+    availableStock: z.number().int().nonnegative().nullable()
+  }).nullable().optional(),
   quantity: z.number().int().positive().nullable(),
   wantsInvoice: z.boolean(),
   analytics: z.object({
@@ -48,7 +54,7 @@ export async function inferIntentWithOpenRouter(message: string): Promise<AgentI
         {
           role: "system",
           content:
-            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|list_orders|traditional_flow|analytics_query|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For questions like ranking customers/products, use analytics_query with groupBy. Never translate enum values. Never execute actions."
+            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|list_orders|traditional_flow|analytics_query|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For stock updates, set productUpdate.availableStock. Never translate enum values. Never execute actions."
         },
         {
           role: "user",
@@ -98,17 +104,86 @@ function normalizePlannerPayload(raw: unknown, message: string) {
   }
 
   const inferredCatalogName = inferCatalogName(message);
+  const inferredProductUpdate = inferProductUpdate(message);
 
   return {
     ...payload,
     customerQuery: typeof payload.customerQuery === "string" ? payload.customerQuery : inferCustomerQuery(message),
-    productQuery: typeof payload.productQuery === "string" ? payload.productQuery : inferProductQuery(message),
+    productQuery: inferredProductUpdate?.productQuery ?? (typeof payload.productQuery === "string" ? payload.productQuery : inferProductQuery(message)),
     catalogName: inferredCatalogName ?? (typeof payload.catalogName === "string" ? cleanCatalogName(payload.catalogName) : null),
+    productUpdate: inferredProductUpdate ?? normalizeProductUpdate(payload.productUpdate),
     quantity: normalizeQuantity(payload.quantity),
     wantsInvoice: Boolean(payload.wantsInvoice),
     analytics,
     confidence: normalizeConfidence(payload.confidence)
   };
+}
+
+function inferProductUpdate(message: string) {
+  const match = message.match(/\b(?:atualize|atualizar|altere|alterar|mude|mudar|defina|definir|ajuste|ajustar)\s+(?:o\s+|a\s+)?(pre[cç]o|valor|estoque)\s+(?:do\s+|da\s+)?produto\s+(.+?)\s+(?:para|pra|por|em)\s+(.+)$/i);
+  if (!match) {
+    return null;
+  }
+  const field = normalizeText(match[1] ?? "");
+  const productQuery = cleanCatalogName(match[2] ?? "");
+  const numberValue = parsePtNumber(match[3] ?? "");
+  if (!productQuery || numberValue === null) {
+    return null;
+  }
+  return {
+    productQuery,
+    unitPrice: field === "estoque" ? null : numberValue,
+    availableStock: field === "estoque" ? Math.trunc(numberValue) : null
+  };
+}
+
+function normalizeProductUpdate(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const payload = value as Record<string, unknown>;
+  return {
+    productQuery: typeof payload.productQuery === "string" ? cleanCatalogName(payload.productQuery) : null,
+    unitPrice: normalizeOptionalNonNegative(payload.unitPrice),
+    availableStock: normalizeOptionalNonNegativeInteger(payload.availableStock)
+  };
+}
+
+function parsePtNumber(value: string) {
+  const cleaned = value
+    .replace(/r\$/gi, "")
+    .replace(/\breais?\b/gi, "")
+    .replace(/\bunidades?\b/gi, "")
+    .replace(/[^\d.,-]/g, "")
+    .trim();
+  if (!cleaned) {
+    return null;
+  }
+  const normalized = cleaned.includes(",")
+    ? cleaned.replace(/\./g, "").replace(",", ".")
+    : cleaned;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeOptionalNonNegative(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : null;
+}
+
+function normalizeOptionalNonNegativeInteger(value: unknown) {
+  const numberValue = normalizeOptionalNonNegative(value);
+  return numberValue === null ? null : Math.trunc(numberValue);
 }
 
 function cleanCatalogName(value: string) {

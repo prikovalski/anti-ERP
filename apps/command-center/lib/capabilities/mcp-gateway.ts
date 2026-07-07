@@ -70,6 +70,14 @@ export class McpCapabilityGateway implements CapabilityGateway {
     return callTool("create_supplier", input, SupplierSchema);
   }
 
+  async updateProduct(input: {
+    productId: string;
+    unitPrice?: number | null;
+    availableStock?: number | null;
+  }) {
+    return callTool("update_product", input, ProductSchema);
+  }
+
   async searchCustomer(input: { query: string }) {
     return callTool("search_customer", input, z.array(CustomerSchema));
   }

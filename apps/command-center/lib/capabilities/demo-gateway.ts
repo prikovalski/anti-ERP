@@ -107,6 +107,24 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return supplier;
   }
 
+  async updateProduct(input: {
+    productId: string;
+    unitPrice?: number | null;
+    availableStock?: number | null;
+  }) {
+    const product = this.products.find((candidate) => candidate.id === input.productId);
+    if (!product) {
+      throw new Error(`Product ${input.productId} not found.`);
+    }
+    if (input.unitPrice !== undefined && input.unitPrice !== null) {
+      product.unitPrice = input.unitPrice;
+    }
+    if (input.availableStock !== undefined && input.availableStock !== null) {
+      product.availableStock = input.availableStock;
+    }
+    return product;
+  }
+
   async searchCustomer(input: { query: string }) {
     const query = normalize(input.query);
     return this.customers.filter(

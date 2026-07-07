@@ -15,6 +15,11 @@ export interface CapabilityGateway {
   createCustomer(input: { name: string }): Promise<Customer>;
   createProduct(input: { name: string }): Promise<Product>;
   createSupplier(input: { name: string }): Promise<Supplier>;
+  updateProduct(input: {
+    productId: string;
+    unitPrice?: number | null;
+    availableStock?: number | null;
+  }): Promise<Product>;
   searchCustomer(input: { query: string }): Promise<Customer[]>;
   searchProduct(input: { query: string }): Promise<Product[]>;
   validateStock(input: { productId: string; quantity: number }): Promise<{

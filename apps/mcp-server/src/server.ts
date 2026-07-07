@@ -14,6 +14,7 @@ import {
   querySalesMetrics,
   searchCustomer,
   searchProduct,
+  updateProduct,
   validateStock
 } from "./domain.js";
 
@@ -42,6 +43,16 @@ server.tool("create_customer", { name: z.string().trim().min(2) }, (input) => js
 server.tool("create_product", { name: z.string().trim().min(2) }, (input) => json(createProduct(input)));
 
 server.tool("create_supplier", { name: z.string().trim().min(2) }, (input) => json(createSupplier(input)));
+
+server.tool(
+  "update_product",
+  {
+    productId: z.string(),
+    unitPrice: z.number().nonnegative().nullable().optional(),
+    availableStock: z.number().int().nonnegative().nullable().optional()
+  },
+  (input) => json(updateProduct(input))
+);
 
 server.tool(
   "validate_stock",

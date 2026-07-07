@@ -324,6 +324,32 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return mapSupplier(supplier);
   }
 
+  async updateProduct(input: {
+    productId: string;
+    unitPrice?: number | null;
+    availableStock?: number | null;
+  }) {
+    await ensureSeeded();
+    const product = (await prisma.product.update({
+      where: { id: input.productId },
+      data: {
+        ...(input.unitPrice !== undefined && input.unitPrice !== null
+          ? { unitPriceCents: toCents(input.unitPrice) }
+          : {}),
+        ...(input.availableStock !== undefined && input.availableStock !== null
+          ? { availableStock: input.availableStock }
+          : {})
+      }
+    })) as DbProduct;
+
+    await audit("update_product", `Updated product ${product.name}`, {
+      productId: product.id,
+      unitPrice: input.unitPrice ?? null,
+      availableStock: input.availableStock ?? null
+    });
+    return mapProduct(product);
+  }
+
   async searchCustomer(input: { query: string }) {
     await ensureSeeded();
     const query = normalize(input.query);

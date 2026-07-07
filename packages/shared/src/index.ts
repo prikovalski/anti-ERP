@@ -83,6 +83,14 @@ export const CreateSupplierInputSchema = z.object({
   name: z.string().trim().min(2)
 });
 
+export const UpdateProductInputSchema = z.object({
+  productId: z.string(),
+  unitPrice: z.number().nonnegative().nullable().optional(),
+  availableStock: z.number().int().nonnegative().nullable().optional()
+}).refine((input) => input.unitPrice !== undefined || input.availableStock !== undefined, {
+  message: "At least one product field must be provided."
+});
+
 export const ValidateStockInputSchema = z.object({
   productId: z.string(),
   quantity: z.number().int().positive()
@@ -233,6 +241,7 @@ export type Supplier = z.infer<typeof SupplierSchema>;
 export type CreateCustomerInput = z.infer<typeof CreateCustomerInputSchema>;
 export type CreateProductInput = z.infer<typeof CreateProductInputSchema>;
 export type CreateSupplierInput = z.infer<typeof CreateSupplierInputSchema>;
+export type UpdateProductInput = z.infer<typeof UpdateProductInputSchema>;
 export type SalesOrderLine = z.infer<typeof SalesOrderLineSchema>;
 export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;

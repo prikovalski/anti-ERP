@@ -86,6 +86,7 @@ export default function CommandCenterPage() {
       "Cadastre o cliente Atlas Retail",
       "Cadastre o produto Mouse",
       "Cadastre o fornecedor Delta Supplies",
+      "Atualize o preço do produto Mouse para 50 reais",
       "Quantos monitores foram vendidos hoje?",
       "Quanto vendemos hoje?",
       "Qual cliente comprou mais este mês?",

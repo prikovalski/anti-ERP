@@ -13,6 +13,7 @@ import {
   SearchCustomerInputSchema,
   SearchProductInputSchema,
   Supplier,
+  UpdateProductInputSchema,
   ValidateStockInputSchema
 } from "@anti-erp/shared";
 import { customers, products } from "./seed.js";
@@ -151,6 +152,26 @@ export function createSupplier(input: unknown) {
   catalogSuppliers.set(supplier.id, supplier);
   audit("create_supplier", `Created supplier ${supplier.name}`, { supplierId: supplier.id });
   return supplier;
+}
+
+export function updateProduct(input: unknown) {
+  const params = UpdateProductInputSchema.parse(input);
+  const product = catalogProducts.find((candidate) => candidate.id === params.productId);
+  if (!product) {
+    throw new Error(`Product ${params.productId} not found.`);
+  }
+  if (params.unitPrice !== undefined && params.unitPrice !== null) {
+    product.unitPrice = params.unitPrice;
+  }
+  if (params.availableStock !== undefined && params.availableStock !== null) {
+    product.availableStock = params.availableStock;
+  }
+  audit("update_product", `Updated product ${product.name}`, {
+    productId: product.id,
+    unitPrice: params.unitPrice ?? null,
+    availableStock: params.availableStock ?? null
+  });
+  return product;
 }
 
 export function validateStock(input: unknown) {
