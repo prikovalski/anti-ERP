@@ -456,4 +456,150 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       ]
     };
   }
+
+  async querySalesMetrics(input: {
+    metric: "units_sold" | "revenue" | "order_count";
+    productQuery?: string | null;
+    customerQuery?: string | null;
+    dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+    groupBy?: "product" | "customer" | "day" | null;
+  }) {
+    await ensureSeeded();
+    const range = resolveDateRange(input.dateRange);
+    const productQuery = normalize(input.productQuery ?? "");
+    const customerQuery = normalize(input.customerQuery ?? "");
+    const orders = await prisma.salesOrder.findMany({
+      where: range
+        ? {
+            createdAt: {
+              gte: range.start,
+              lt: range.end
+            }
+          }
+        : undefined,
+      include: {
+        customer: true,
+        lines: {
+          include: {
+            product: true
+          }
+        }
+      }
+    });
+
+    const filteredOrders = orders.filter((order) => {
+      const matchesCustomer = customerQuery ? normalize(order.customer.name).includes(customerQuery) : true;
+      const matchesProduct = productQuery
+        ? order.lines.some(
+            (line) =>
+              normalize(line.product.name).includes(productQuery) ||
+              normalize(line.product.sku).includes(productQuery)
+          )
+        : true;
+      return matchesCustomer && matchesProduct;
+    });
+
+    const filteredLines = filteredOrders.flatMap((order) =>
+      order.lines.filter((line) =>
+        productQuery
+          ? normalize(line.product.name).includes(productQuery) || normalize(line.product.sku).includes(productQuery)
+          : true
+      )
+    );
+
+    const value =
+      input.metric === "units_sold"
+        ? filteredLines.reduce((sum, line) => sum + line.quantity, 0)
+        : input.metric === "revenue"
+          ? fromCents(filteredLines.reduce((sum, line) => sum + line.totalCents, 0))
+          : filteredOrders.length;
+
+    const rows = buildMetricRows(input.groupBy, input.metric, filteredOrders);
+    await audit("query_sales_metrics", `Queried ${input.metric} for ${input.dateRange}`, {
+      metric: input.metric,
+      productQuery: input.productQuery ?? null,
+      customerQuery: input.customerQuery ?? null,
+      dateRange: input.dateRange,
+      value
+    });
+
+    return {
+      metric: input.metric,
+      value,
+      label: buildMetricLabel(input.metric, input.productQuery, input.dateRange),
+      rows
+    };
+  }
+}
+
+function resolveDateRange(dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
+  if (dateRange === "all_time") {
+    return null;
+  }
+
+  const now = new Date();
+  const start = new Date(now);
+  if (dateRange === "today") {
+    start.setHours(0, 0, 0, 0);
+  }
+  if (dateRange === "last_7_days") {
+    start.setDate(start.getDate() - 7);
+  }
+  if (dateRange === "month_to_date") {
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+  }
+
+  return {
+    start,
+    end: now
+  };
+}
+
+function buildMetricLabel(metric: string, productQuery: string | null | undefined, dateRange: string) {
+  const subject = productQuery ? productQuery : "sales";
+  const period = dateRange === "today" ? "today" : dateRange.replaceAll("_", " ");
+  return `${metric.replaceAll("_", " ")} for ${subject} ${period}`;
+}
+
+function buildMetricRows(
+  groupBy: "product" | "customer" | "day" | null | undefined,
+  metric: "units_sold" | "revenue" | "order_count",
+  orders: Array<{
+    createdAt: Date;
+    customer: { name: string };
+    lines: Array<{
+      quantity: number;
+      totalCents: number;
+      product: { name: string };
+    }>;
+  }>
+) {
+  if (!groupBy) {
+    return [];
+  }
+
+  const rows = new Map<string, number>();
+  for (const order of orders) {
+    const labels =
+      groupBy === "customer"
+        ? [{ label: order.customer.name, lines: order.lines }]
+        : groupBy === "day"
+          ? [{ label: order.createdAt.toISOString().slice(0, 10), lines: order.lines }]
+          : order.lines.map((line) => ({ label: line.product.name, lines: [line] }));
+
+    for (const item of labels) {
+      const increment =
+        metric === "units_sold"
+          ? item.lines.reduce((sum, line) => sum + line.quantity, 0)
+          : metric === "revenue"
+            ? fromCents(item.lines.reduce((sum, line) => sum + line.totalCents, 0))
+            : 1;
+      rows.set(item.label, (rows.get(item.label) ?? 0) + increment);
+    }
+  }
+
+  return Array.from(rows.entries())
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value);
 }

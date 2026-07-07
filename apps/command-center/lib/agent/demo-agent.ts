@@ -45,6 +45,50 @@ export function parseIntentLocally(message: string): AgentIntent {
   const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
   const asksTraditionalFlow = /\b(tradicional|erp classico|erp tradicional|compar)/.test(normalized);
   const asksList = /\b(liste|listar|recentes|hoje|criados)\b/.test(normalized);
+  const asksAnalytics = /\b(quantos|quanto|vendemos|vendidos|vendeu|saindo|saida|comprou|compraram|faturamento|receita)\b/.test(normalized);
+  const dateRange = normalized.includes("semana")
+    ? "last_7_days"
+    : normalized.includes("mes")
+      ? "month_to_date"
+      : normalized.includes("hoje")
+        ? "today"
+        : "all_time";
+
+  if (asksAnalytics) {
+    return {
+      intent: "analytics_query",
+      customerQuery: normalized.includes("globo")
+        ? "globo"
+        : normalized.includes("legacy")
+          ? "legacy"
+          : normalized.includes("northstar")
+            ? "northstar"
+            : null,
+      productQuery: normalized.includes("monitor")
+        ? "monitor"
+        : normalized.includes("teclado")
+          ? "teclado"
+          : normalized.includes("notebook")
+            ? "notebook"
+            : null,
+      quantity: null,
+      wantsInvoice: false,
+      analytics: {
+        metric: /\b(quanto|faturamento|receita|vendemos)\b/.test(normalized) && !/\bquantos\b/.test(normalized)
+          ? "revenue"
+          : /\b(pedidos|pedido)\b/.test(normalized)
+            ? "order_count"
+            : "units_sold",
+        groupBy: normalized.includes("produto")
+          ? "product"
+          : normalized.includes("cliente")
+            ? "customer"
+            : null,
+        dateRange
+      },
+      confidence: 0.82
+    };
+  }
 
   if (asksTraditionalFlow) {
     return {
@@ -53,6 +97,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       productQuery: null,
       quantity: null,
       wantsInvoice: false,
+      analytics: null,
       confidence: 0.95
     };
   }
@@ -64,6 +109,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       productQuery: null,
       quantity: null,
       wantsInvoice: false,
+      analytics: null,
       confidence: 0.85
     };
   }
@@ -75,6 +121,7 @@ export function parseIntentLocally(message: string): AgentIntent {
       productQuery: null,
       quantity: null,
       wantsInvoice: true,
+      analytics: null,
       confidence: 0.8
     };
   }
@@ -98,6 +145,7 @@ export function parseIntentLocally(message: string): AgentIntent {
             : null,
       quantity: quantityMatch ? Number(quantityMatch[1]) : null,
       wantsInvoice: mentionsInvoice,
+      analytics: null,
       confidence: 0.86
     };
   }
@@ -108,6 +156,7 @@ export function parseIntentLocally(message: string): AgentIntent {
     productQuery: null,
     quantity: null,
     wantsInvoice: false,
+    analytics: null,
     confidence: 0.4
   };
 }
@@ -152,6 +201,46 @@ export async function runDemoAgent(input: {
           : "Ainda nao ha pedidos confirmados nesta sessao demo."
       },
       auditEvents: [audit("list_recent_orders", "Listed recent sales orders.")],
+      lastOrderId: lastOrderId ?? null
+    };
+  }
+
+  if (intent.intent === "analytics_query") {
+    const analytics = intent.analytics ?? {
+      metric: "units_sold" as const,
+      groupBy: null,
+      dateRange: "today" as const
+    };
+    if (!analytics.metric || !analytics.dateRange) {
+      return {
+        mode,
+        message: {
+          id: createId("msg"),
+          role: "agent",
+          text: "Consigo analisar vendas, mas preciso saber qual métrica ou período você quer consultar."
+        },
+        auditEvents: [audit("analytics_clarification_required", "Missing analytics metric or date range.", "agent")],
+        lastOrderId: lastOrderId ?? null
+      };
+    }
+
+    const metric = await gateway.querySalesMetrics({
+      metric: analytics.metric,
+      productQuery: intent.productQuery,
+      customerQuery: intent.customerQuery,
+      dateRange: analytics.dateRange,
+      groupBy: analytics.groupBy
+    });
+
+    return {
+      mode,
+      analyticsResult: metric,
+      message: {
+        id: createId("msg"),
+        role: "agent",
+        text: formatAnalyticsAnswer(metric.metric, metric.value, intent.productQuery, analytics.dateRange)
+      },
+      auditEvents: [audit("query_sales_metrics", `Queried ${metric.label}.`)],
       lastOrderId: lastOrderId ?? null
     };
   }
@@ -250,6 +339,31 @@ export async function runDemoAgent(input: {
     auditEvents: [audit("unknown_intent", "Agent could not map the message to a supported MCP capability.", "agent")],
     lastOrderId: lastOrderId ?? null
   };
+}
+
+function formatAnalyticsAnswer(
+  metric: "units_sold" | "revenue" | "order_count",
+  value: number,
+  productQuery: string | null,
+  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time"
+) {
+  const period =
+    dateRange === "today"
+      ? "hoje"
+      : dateRange === "last_7_days"
+        ? "nos últimos 7 dias"
+        : dateRange === "month_to_date"
+          ? "neste mês"
+          : "no histórico";
+  const subject = productQuery ? `${productQuery}` : "vendas";
+
+  if (metric === "revenue") {
+    return `O faturamento de ${subject} ${period} foi ${money(value)}.`;
+  }
+  if (metric === "order_count") {
+    return `Foram criados ${value} pedido(s) ${period}.`;
+  }
+  return `Foram vendidas ${value} unidade(s) de ${subject} ${period}.`;
 }
 
 export async function confirmSalesOrder(

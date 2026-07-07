@@ -93,6 +93,24 @@ export const GetSalesOrderInputSchema = z.object({
   salesOrderId: z.string()
 });
 
+export const AnalyticsMetricSchema = z.enum(["units_sold", "revenue", "order_count"]);
+
+export const AnalyticsDateRangeSchema = z.enum(["today", "last_7_days", "month_to_date", "all_time"]);
+
+export const AnalyticsGroupBySchema = z.enum(["product", "customer", "day"]);
+
+export const AnalyticsResultSchema = z.object({
+  metric: AnalyticsMetricSchema,
+  value: z.number(),
+  label: z.string(),
+  rows: z.array(
+    z.object({
+      label: z.string(),
+      value: z.number()
+    })
+  )
+});
+
 export const AgentMessageSchema = z.object({
   id: z.string(),
   role: z.enum(["user", "agent"]),
@@ -114,6 +132,7 @@ export const AgentResponseSchema = z.object({
   preview: SalesOrderPreviewSchema.nullable().optional(),
   order: SalesOrderSchema.nullable().optional(),
   invoice: ConceptInvoiceSchema.nullable().optional(),
+  analyticsResult: AnalyticsResultSchema.nullable().optional(),
   auditEvents: z.array(AuditEventSchema),
   mode: z.enum(["demo-agent", "openrouter", "fallback"]),
   lastOrderId: z.string().nullable().optional()
@@ -174,6 +193,10 @@ export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;
 export type ConceptInvoice = z.infer<typeof ConceptInvoiceSchema>;
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
+export type AnalyticsMetric = z.infer<typeof AnalyticsMetricSchema>;
+export type AnalyticsDateRange = z.infer<typeof AnalyticsDateRangeSchema>;
+export type AnalyticsGroupBy = z.infer<typeof AnalyticsGroupBySchema>;
+export type AnalyticsResult = z.infer<typeof AnalyticsResultSchema>;
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 export type AgentRequest = z.infer<typeof AgentRequestSchema>;
 export type AgentConfirmRequest = z.infer<typeof AgentConfirmRequestSchema>;

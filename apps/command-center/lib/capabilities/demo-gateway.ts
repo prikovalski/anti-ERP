@@ -162,6 +162,49 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       ]
     };
   }
+
+  async querySalesMetrics(input: {
+    metric: "units_sold" | "revenue" | "order_count";
+    productQuery?: string | null;
+    customerQuery?: string | null;
+    dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+    groupBy?: "product" | "customer" | "day" | null;
+  }) {
+    const query = normalize(input.productQuery ?? "");
+    const customerQuery = normalize(input.customerQuery ?? "");
+    const filteredOrders = Array.from(salesOrders.values()).filter((order) => {
+      const matchesCustomer = customerQuery ? normalize(order.customer.name).includes(customerQuery) : true;
+      const matchesProduct = query
+        ? order.lines.some((line) => normalize(line.name).includes(query) || normalize(line.sku).includes(query))
+        : true;
+      return matchesCustomer && matchesProduct;
+    });
+
+    const matchingLines = filteredOrders.flatMap((order) =>
+      order.lines.filter((line) =>
+        query ? normalize(line.name).includes(query) || normalize(line.sku).includes(query) : true
+      )
+    );
+    const value =
+      input.metric === "units_sold"
+        ? matchingLines.reduce((sum, line) => sum + line.quantity, 0)
+        : input.metric === "revenue"
+          ? matchingLines.reduce((sum, line) => sum + line.total, 0)
+          : filteredOrders.length;
+
+    return {
+      metric: input.metric,
+      value,
+      label: buildMetricLabel(input.metric, input.productQuery, input.dateRange),
+      rows: []
+    };
+  }
 }
 
 export const demoCapabilityGateway = new DemoCapabilityGateway();
+
+function buildMetricLabel(metric: string, productQuery: string | null | undefined, dateRange: string) {
+  const subject = productQuery ? productQuery : "sales";
+  const period = dateRange === "today" ? "today" : dateRange.replaceAll("_", " ");
+  return `${metric.replaceAll("_", " ")} for ${subject} ${period}`;
+}

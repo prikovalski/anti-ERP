@@ -113,4 +113,28 @@ export class McpCapabilityGateway implements CapabilityGateway {
       })
     );
   }
+
+  async querySalesMetrics(input: {
+    metric: "units_sold" | "revenue" | "order_count";
+    productQuery?: string | null;
+    customerQuery?: string | null;
+    dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+    groupBy?: "product" | "customer" | "day" | null;
+  }) {
+    return callTool(
+      "query_sales_metrics",
+      input,
+      z.object({
+        metric: z.enum(["units_sold", "revenue", "order_count"]),
+        value: z.number(),
+        label: z.string(),
+        rows: z.array(
+          z.object({
+            label: z.string(),
+            value: z.number()
+          })
+        )
+      })
+    );
+  }
 }

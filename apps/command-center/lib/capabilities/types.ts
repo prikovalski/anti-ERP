@@ -1,4 +1,8 @@
 import type {
+  AnalyticsDateRange,
+  AnalyticsGroupBy,
+  AnalyticsMetric,
+  AnalyticsResult,
   ConceptInvoice,
   Customer,
   Product,
@@ -30,4 +34,11 @@ export interface CapabilityGateway {
     traditional: string[];
     antiErp: string[];
   }>;
+  querySalesMetrics(input: {
+    metric: AnalyticsMetric;
+    productQuery?: string | null;
+    customerQuery?: string | null;
+    dateRange: AnalyticsDateRange;
+    groupBy?: AnalyticsGroupBy | null;
+  }): Promise<AnalyticsResult>;
 }

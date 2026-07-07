@@ -1,6 +1,13 @@
 "use client";
 
-import type { AgentResponse, AuditEvent, ConceptInvoice, SalesOrder, SalesOrderPreview } from "@anti-erp/shared";
+import type {
+  AgentResponse,
+  AnalyticsResult,
+  AuditEvent,
+  ConceptInvoice,
+  SalesOrder,
+  SalesOrderPreview
+} from "@anti-erp/shared";
 import {
   AlertTriangle,
   Bot,
@@ -40,6 +47,14 @@ function money(value: number) {
   }).format(value);
 }
 
+function formatAnalyticsValue(result: AnalyticsResult) {
+  return result.metric === "revenue" ? money(result.value) : String(result.value);
+}
+
+function formatAnalyticsRowValue(result: AnalyticsResult, value: number) {
+  return result.metric === "revenue" ? money(value) : String(value);
+}
+
 export default function CommandCenterPage() {
   const [input, setInput] = useState("Crie um pedido para Northstar com 10 notebooks e gere a nota.");
   const [messages, setMessages] = useState<Message[]>([
@@ -52,6 +67,7 @@ export default function CommandCenterPage() {
   const [preview, setPreview] = useState<SalesOrderPreview | null>(null);
   const [order, setOrder] = useState<SalesOrder | null>(null);
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
+  const [analyticsResult, setAnalyticsResult] = useState<AnalyticsResult | null>(null);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("demo-agent");
   const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
@@ -63,8 +79,9 @@ export default function CommandCenterPage() {
   const suggestions = useMemo(
     () => [
       "Crie um pedido para Northstar com 10 notebooks",
+      "Quantos monitores foram vendidos hoje?",
+      "Quanto vendemos hoje?",
       "Gere uma nota para o último pedido",
-      "Liste os pedidos criados hoje",
       "Explique como isso seria feito em um ERP tradicional"
     ],
     []
@@ -76,6 +93,7 @@ export default function CommandCenterPage() {
     setPreview(response.preview ?? null);
     setOrder(response.order ?? order);
     setInvoice(response.invoice ?? invoice);
+    setAnalyticsResult(response.analyticsResult ?? null);
     setLastOrderId(response.lastOrderId ?? lastOrderId);
     setAudit((current) => [...response.auditEvents, ...current]);
   }
@@ -93,6 +111,7 @@ export default function CommandCenterPage() {
     setCreateInvoiceAfterConfirm(/\b(nota|invoice|fatura)\b/i.test(command));
     setOrder(null);
     setInvoice(null);
+    setAnalyticsResult(null);
     setInput("");
 
     try {
@@ -365,8 +384,25 @@ export default function CommandCenterPage() {
                   <Metric label="Concept invoice" value={invoice?.id ?? "Not generated"} />
                   <Metric label="Amount" value={money(invoice?.amount ?? order.subtotal)} />
                 </div>
+              ) : analyticsResult ? (
+                <div className="space-y-3 text-sm">
+                  <Metric label={analyticsResult.label} value={formatAnalyticsValue(analyticsResult)} />
+                  {analyticsResult.rows.length > 0 ? (
+                    <div className="overflow-hidden rounded-md border border-line">
+                      {analyticsResult.rows.map((row) => (
+                        <div
+                          key={row.label}
+                          className="flex items-center justify-between gap-3 border-t border-line px-3 py-2 first:border-t-0"
+                        >
+                          <span className="text-steel">{row.label}</span>
+                          <span className="font-semibold text-ink">{formatAnalyticsRowValue(analyticsResult, row.value)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               ) : (
-                <p className="text-sm leading-6 text-steel">A confirmed order and concept invoice will appear here.</p>
+                <p className="text-sm leading-6 text-steel">A confirmed order, concept invoice, or sales metric will appear here.</p>
               )}
             </section>
 
