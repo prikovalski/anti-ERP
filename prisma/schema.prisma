@@ -82,6 +82,23 @@ model AuditEvent {
   createdAt DateTime @default(now())
 }
 
+model McpCallLog {
+  id            String   @id @default(cuid())
+  requestId     String
+  role          String
+  tool          String
+  status        String
+  durationMs    Int
+  inputSummary  Json?
+  outputSummary Json?
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@index([requestId])
+  @@index([role, tool])
+  @@index([createdAt])
+}
+
 enum CustomerStatus {
   active
   blocked

@@ -1,4 +1,4 @@
-import { DemoCapabilityGateway, demoCapabilityGateway } from "./demo-gateway";
+import { demoCapabilityGateway } from "./demo-gateway";
 import { McpCapabilityGateway } from "./mcp-gateway";
 import type { CapabilityGateway } from "./types";
 
@@ -12,16 +12,12 @@ export async function getCapabilityGateway(): Promise<CapabilityGateway> {
     return prismaGateway;
   }
 
-  if (process.env.CAPABILITY_GATEWAY === "mcp") {
+  if ((process.env.CAPABILITY_GATEWAY === "mcp" || process.env.DATABASE_URL) && process.env.CAPABILITY_GATEWAY !== "demo") {
     mcpGateway ??= new McpCapabilityGateway();
     return mcpGateway;
   }
 
   return demoCapabilityGateway;
-}
-
-export function getFallbackCapabilityGateway(): CapabilityGateway {
-  return new DemoCapabilityGateway();
 }
 
 export type { CapabilityGateway };

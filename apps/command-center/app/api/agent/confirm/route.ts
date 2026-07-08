@@ -1,7 +1,18 @@
 import { AgentConfirmRequestSchema, AgentResponseSchema } from "@anti-erp/shared";
 import { NextResponse } from "next/server";
 import { confirmSalesOrder } from "@/lib/agent/demo-agent";
-import { getCapabilityGateway, getFallbackCapabilityGateway } from "@/lib/capabilities";
+import { getCapabilityGateway } from "@/lib/capabilities";
+import { withMcpTrace } from "@/lib/observability/mcp-trace";
+
+function capabilityFailureResponse() {
+  return NextResponse.json(
+    {
+      error: "capability_gateway_unavailable",
+      message: "Nao consegui confirmar o pedido porque o gateway MCP/banco esta indisponivel. Nenhuma criacao foi aplicada."
+    },
+    { status: 503 }
+  );
+}
 
 export async function POST(request: Request) {
   const body = AgentConfirmRequestSchema.parse(await request.json());
@@ -16,11 +27,12 @@ export async function POST(request: Request) {
   }
 
   try {
-    const response = await confirmSalesOrder(await getCapabilityGateway(), body.preview, body.createInvoice);
-    return NextResponse.json(AgentResponseSchema.parse(response));
+    const { result: response, trace } = await withMcpTrace(async () =>
+      confirmSalesOrder(await getCapabilityGateway(), body.preview, body.createInvoice)
+    );
+    return NextResponse.json(AgentResponseSchema.parse({ ...response, mcpTrace: trace }));
   } catch (error) {
-    console.error("Confirmation capability gateway failed. Falling back to demo gateway.", error);
-    const response = await confirmSalesOrder(getFallbackCapabilityGateway(), body.preview, body.createInvoice);
-    return NextResponse.json(AgentResponseSchema.parse({ ...response, mode: "fallback" }));
+    console.error("Confirmation capability gateway failed. Returning controlled error.", error);
+    return capabilityFailureResponse();
   }
 }

@@ -42,6 +42,10 @@ function cleanCatalogName(value: string) {
   return value.trim().replace(/\s+/g, " ").replace(/[.!?]+$/g, "");
 }
 
+function cleanCustomerQuery(value: string) {
+  return cleanCatalogName(value).replace(/^(?:o|a|os|as|um|uma)\s+/i, "");
+}
+
 function extractCatalogCommand(message: string) {
   const match = message.match(/\b(?:cadastre|cadastrar|crie|criar|registre|registrar|adicione|adicionar)\s+(?:o\s+|a\s+|um\s+|uma\s+)?(cliente|produto|fornecedor)\s+(.+)$/i);
   if (!match) {
@@ -91,10 +95,77 @@ function extractProductUpdateCommand(message: string) {
   };
 }
 
+function extractOrderCommand(message: string) {
+  const normalized = normalize(message);
+  const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
+  const mentionsInvoice = /\b(nota|nf|invoice|fatura)\b/.test(normalized);
+  const customerMatch = message.match(/\b(?:para|pra|pro)\s+(.+?)\s+(?:com|contendo|incluindo|de\s+(?=\d)|itens?\b|os\s+itens?\b)/i);
+  const orderLines = extractOrderLines(message);
+
+  if (!mentionsOrder && orderLines.length === 0) {
+    return null;
+  }
+
+  return {
+    customerQuery: customerMatch ? cleanCustomerQuery(customerMatch[1] ?? "") : null,
+    orderLines,
+    wantsInvoice: mentionsInvoice
+  };
+}
+
+function extractOrderLines(message: string) {
+  const segmentMatch =
+    message.match(/\b(?:com|contendo|incluindo)\s+(.+)$/i)
+    ?? message.match(/\b(?:para|pra|pro)\s+.+?\s+de\s+(\d+.+)$/i);
+  if (!segmentMatch) {
+    return [];
+  }
+
+  const segment = (segmentMatch[1] ?? "")
+    .replace(/^(?:os\s+|as\s+)?itens?:?\s*/i, "")
+    .replace(/\s+(?:e\s+)?(?:gere|gerar|emita|emitir|crie|criar)\s+(?:a\s+|uma\s+)?(?:nota|nf|invoice|fatura).*$/i, "")
+    .replace(/[.!?]+$/g, "");
+  const lines: Array<{ productQuery: string; quantity: number }> = [];
+  const itemPattern = /(\d+)\s+([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\s-]*?)(?=\s*(?:,|\s+e\s+\d+|\s+com\s+\d+|$))/gi;
+
+  for (const match of segment.matchAll(itemPattern)) {
+    const quantity = Number(match[1]);
+    const productQuery = cleanProductQuery(match[2] ?? "");
+    if (Number.isInteger(quantity) && quantity > 0 && productQuery) {
+      lines.push({ productQuery, quantity });
+    }
+  }
+
+  return lines;
+}
+
+function cleanProductQuery(value: string) {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/^(?:de|do|da|dos|das|um|uma|o|a|os|as)\s+/i, "")
+    .replace(/[.!?]+$/g, "");
+}
+
+function singularizeProductQuery(value: string) {
+  const normalized = normalize(value);
+  if (normalized.endsWith("oes")) {
+    return value.slice(0, -3) + "ao";
+  }
+  if (normalized.endsWith("is")) {
+    return value.slice(0, -2) + "il";
+  }
+  if (normalized.endsWith("s") && value.length > 3) {
+    return value.slice(0, -1);
+  }
+  return value;
+}
+
 export function parseIntentLocally(message: string): AgentIntent {
   const normalized = normalize(message);
   const catalogCommand = extractCatalogCommand(message);
   const productUpdate = extractProductUpdateCommand(message);
+  const orderCommand = extractOrderCommand(message);
   const quantityMatch = normalized.match(/(\d+)\s+(notebook|notebooks|monitor|monitores|teclado|teclados)/);
   const mentionsInvoice = /\b(nota|invoice|fatura)\b/.test(normalized);
   const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
@@ -139,6 +210,29 @@ export function parseIntentLocally(message: string): AgentIntent {
       wantsInvoice: false,
       analytics: null,
       confidence: 0.94
+    };
+  }
+
+  if (orderCommand) {
+    const firstLine = orderCommand.orderLines[0] ?? null;
+    return {
+      intent: orderCommand.wantsInvoice ? "create_order_with_invoice" : "create_order",
+      customerQuery: orderCommand.customerQuery
+        ?? (normalized.includes("globo")
+          ? "globo"
+          : normalized.includes("legacy")
+            ? "legacy"
+            : normalized.includes("northstar")
+              ? "northstar"
+              : null),
+      productQuery: firstLine?.productQuery ?? null,
+      catalogName: null,
+      productUpdate: null,
+      quantity: firstLine?.quantity ?? null,
+      orderLines: orderCommand.orderLines.length ? orderCommand.orderLines : null,
+      wantsInvoice: orderCommand.wantsInvoice,
+      analytics: null,
+      confidence: 0.9
     };
   }
 
@@ -525,23 +619,36 @@ export async function runDemoAgent(input: {
     };
   }
 
-  if (intent.intent === "create_order") {
+  if (intent.intent === "create_order" || intent.intent === "create_order_with_invoice") {
     const customerMatches = intent.customerQuery
       ? await gateway.searchCustomer({ query: intent.customerQuery })
       : [];
-    const productMatches = intent.productQuery
-      ? await gateway.searchProduct({ query: intent.productQuery })
-      : [];
     const customer = customerMatches[0] ?? null;
-    const product = productMatches[0] ?? null;
-    const quantity = intent.quantity;
+    const requestedLines =
+      intent.orderLines && intent.orderLines.length > 0
+        ? intent.orderLines
+        : intent.productQuery && intent.quantity
+          ? [{ productQuery: intent.productQuery, quantity: intent.quantity }]
+          : [];
+    const resolvedLines = await Promise.all(
+      requestedLines.map(async (line) => {
+        const matches = await searchProductWithFallback(gateway, line.productQuery);
+        return {
+          requested: line,
+          product: matches[0] ?? null
+        };
+      })
+    );
+    const missingProducts = resolvedLines
+      .filter((line) => !line.product)
+      .map((line) => line.requested.productQuery);
     const missing = [
       customer ? null : "cliente",
-      product ? null : "produto",
-      quantity ? null : "quantidade"
+      requestedLines.length ? null : "produto e quantidade",
+      ...missingProducts.map((product) => `produto ${product}`)
     ].filter(Boolean);
 
-    if (!customer || !product || !quantity) {
+    if (!customer || requestedLines.length === 0 || missingProducts.length > 0) {
       return {
         mode,
         message: {
@@ -554,11 +661,24 @@ export async function runDemoAgent(input: {
       };
     }
 
-    const stock = await gateway.validateStock({ productId: product.id, quantity });
+    const stockResults = await Promise.all(
+      resolvedLines.map((line) =>
+        gateway.validateStock({
+          productId: line.product!.id,
+          quantity: line.requested.quantity
+        })
+      )
+    );
     const preview = await gateway.prepareSalesOrder({
       customerId: customer.id,
-      lines: [{ productId: product.id, quantity }]
+      lines: resolvedLines.map((line) => ({
+        productId: line.product!.id,
+        quantity: line.requested.quantity
+      }))
     });
+    const itemSummary = preview.lines
+      .map((line) => `${line.quantity}x ${line.name}`)
+      .join(", ");
 
     return {
       mode,
@@ -566,12 +686,19 @@ export async function runDemoAgent(input: {
       message: {
         id: createId("msg"),
         role: "agent",
-        text: `Encontrei ${customer.name}, localizei ${product.name}, validei estoque e preparei uma previa de ${money(preview.subtotal)}. Preciso da sua confirmacao antes de criar o pedido.`
+        text: intent.wantsInvoice
+          ? `Encontrei ${customer.name}, localizei ${itemSummary}, validei estoque e preparei uma previa de ${money(preview.subtotal)}. Depois da sua confirmacao, criarei o pedido e a nota conceitual.`
+          : `Encontrei ${customer.name}, localizei ${itemSummary}, validei estoque e preparei uma previa de ${money(preview.subtotal)}. Preciso da sua confirmacao antes de criar o pedido.`
       },
       auditEvents: [
         audit("search_customer", `Matched customer ${customer.name}.`),
-        audit("search_product", `Matched product ${product.name}.`),
-        audit("validate_stock", `Validated ${quantity} units against ${stock.available} in stock.`),
+        audit("search_product", `Matched products: ${preview.lines.map((line) => line.name).join(", ")}.`),
+        audit(
+          "validate_stock",
+          `Validated ${stockResults.length} line(s): ${stockResults
+            .map((stock) => `${stock.requested}/${stock.available}`)
+            .join(", ")}.`
+        ),
         audit("prepare_sales_order", `Prepared preview for ${money(preview.subtotal)}.`)
       ],
       lastOrderId: lastOrderId ?? null
@@ -616,6 +743,19 @@ function createCatalogErrorResponse(
     ],
     lastOrderId: lastOrderId ?? null
   };
+}
+
+async function searchProductWithFallback(gateway: CapabilityGateway, productQuery: string) {
+  const matches = await gateway.searchProduct({ query: productQuery });
+  if (matches.length > 0) {
+    return matches;
+  }
+
+  const singular = singularizeProductQuery(productQuery);
+  if (singular === productQuery) {
+    return matches;
+  }
+  return gateway.searchProduct({ query: singular });
 }
 
 function formatAnalyticsAnswer(

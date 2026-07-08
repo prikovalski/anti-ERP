@@ -10,9 +10,35 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
+import { recordMcpCall } from "@/lib/observability/mcp-trace";
 import type { CapabilityGateway } from "./types";
 
-let clientPromise: Promise<Client> | null = null;
+type McpServerRole =
+  | "core"
+  | "customers"
+  | "products"
+  | "suppliers"
+  | "salesOrders"
+  | "invoices"
+  | "analytics";
+
+const clientPromises = new Map<McpServerRole, Promise<Client>>();
+const customerTools = new Set(["search_customer", "create_customer"]);
+const productTools = new Set([
+  "search_product",
+  "create_product",
+  "update_product",
+  "validate_stock"
+]);
+const supplierTools = new Set(["create_supplier"]);
+const salesOrderTools = new Set([
+  "prepare_sales_order",
+  "create_sales_order",
+  "get_sales_order",
+  "list_recent_orders"
+]);
+const invoiceTools = new Set(["create_concept_invoice"]);
+const analyticsTools = new Set(["get_traditional_erp_flow", "query_sales_metrics"]);
 
 const ToolTextResultSchema = z.object({
   content: z.array(
@@ -23,22 +49,22 @@ const ToolTextResultSchema = z.object({
   )
 });
 
-async function getClient() {
-  if (!clientPromise) {
-    clientPromise = createClient();
+async function getClient(role: McpServerRole) {
+  if (!clientPromises.has(role)) {
+    clientPromises.set(role, createClient(role));
   }
-  return clientPromise;
+  return clientPromises.get(role)!;
 }
 
-async function createClient() {
+async function createClient(role: McpServerRole) {
   const client = new Client({
-    name: "anti-erp-command-center",
+    name: `anti-erp-command-center-${role}`,
     version: "0.1.0"
   });
   const transport = new StdioClientTransport({
-    command: process.env.MCP_SERVER_COMMAND ?? "pnpm",
-    args: (process.env.MCP_SERVER_ARGS ?? "--filter @anti-erp/mcp-server dev").split(" "),
-    cwd: process.env.MCP_SERVER_CWD ?? process.cwd(),
+    command: getServerCommand(role),
+    args: getServerArgs(role).split(" "),
+    cwd: getServerCwd(role),
     stderr: "pipe"
   });
 
@@ -46,15 +72,127 @@ async function createClient() {
   return client;
 }
 
-async function callTool<T>(name: string, args: Record<string, unknown>, schema: z.ZodType<T>) {
-  const client = await getClient();
-  const result = await client.callTool({ name, arguments: args });
-  const parsedResult = ToolTextResultSchema.parse(result);
-  const text = parsedResult.content[0]?.text;
-  if (!text) {
-    throw new Error(`MCP tool ${name} did not return text content.`);
+function getServerCommand(role: McpServerRole) {
+  if (role === "customers") {
+    return process.env.MCP_CUSTOMERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
   }
-  return schema.parse(JSON.parse(text));
+  if (role === "products") {
+    return process.env.MCP_PRODUCTS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+  }
+  if (role === "suppliers") {
+    return process.env.MCP_SUPPLIERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+  }
+  if (role === "salesOrders") {
+    return process.env.MCP_SALES_ORDERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+  }
+  if (role === "invoices") {
+    return process.env.MCP_INVOICES_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+  }
+  if (role === "analytics") {
+    return process.env.MCP_ANALYTICS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+  }
+  return process.env.MCP_CORE_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+}
+
+function getServerArgs(role: McpServerRole) {
+  if (role === "customers") {
+    return process.env.MCP_CUSTOMERS_ARGS ?? "--filter @anti-erp/mcp-customers dev";
+  }
+  if (role === "products") {
+    return process.env.MCP_PRODUCTS_ARGS ?? "--filter @anti-erp/mcp-products dev";
+  }
+  if (role === "suppliers") {
+    return process.env.MCP_SUPPLIERS_ARGS ?? "--filter @anti-erp/mcp-suppliers dev";
+  }
+  if (role === "salesOrders") {
+    return process.env.MCP_SALES_ORDERS_ARGS ?? "--filter @anti-erp/mcp-sales-orders dev";
+  }
+  if (role === "invoices") {
+    return process.env.MCP_INVOICES_ARGS ?? "--filter @anti-erp/mcp-invoices dev";
+  }
+  if (role === "analytics") {
+    return process.env.MCP_ANALYTICS_ARGS ?? "--filter @anti-erp/mcp-analytics dev";
+  }
+  return process.env.MCP_CORE_ARGS ?? process.env.MCP_SERVER_ARGS ?? "--filter @anti-erp/mcp-server dev";
+}
+
+function getServerCwd(role: McpServerRole) {
+  if (role === "customers") {
+    return process.env.MCP_CUSTOMERS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+  }
+  if (role === "products") {
+    return process.env.MCP_PRODUCTS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+  }
+  if (role === "suppliers") {
+    return process.env.MCP_SUPPLIERS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+  }
+  if (role === "salesOrders") {
+    return process.env.MCP_SALES_ORDERS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+  }
+  if (role === "invoices") {
+    return process.env.MCP_INVOICES_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+  }
+  if (role === "analytics") {
+    return process.env.MCP_ANALYTICS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+  }
+  return process.env.MCP_CORE_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+}
+
+function getRoleForTool(name: string): McpServerRole {
+  if (customerTools.has(name)) {
+    return "customers";
+  }
+  if (productTools.has(name)) {
+    return "products";
+  }
+  if (supplierTools.has(name)) {
+    return "suppliers";
+  }
+  if (salesOrderTools.has(name)) {
+    return "salesOrders";
+  }
+  if (invoiceTools.has(name)) {
+    return "invoices";
+  }
+  if (analyticsTools.has(name)) {
+    return "analytics";
+  }
+  return "core";
+}
+
+async function callTool<T>(name: string, args: Record<string, unknown>, schema: z.ZodType<T>) {
+  const role = getRoleForTool(name);
+  const startedAt = performance.now();
+
+  try {
+    const client = await getClient(role);
+    const result = await client.callTool({ name, arguments: args });
+    const parsedResult = ToolTextResultSchema.parse(result);
+    const text = parsedResult.content[0]?.text;
+    if (!text) {
+      throw new Error(`MCP tool ${name} did not return text content.`);
+    }
+    const output = schema.parse(JSON.parse(text));
+    await recordMcpCall({
+      role,
+      tool: name,
+      status: "success",
+      durationMs: performance.now() - startedAt,
+      args,
+      output
+    });
+    return output;
+  } catch (error) {
+    await recordMcpCall({
+      role,
+      tool: name,
+      status: "error",
+      durationMs: performance.now() - startedAt,
+      args,
+      error
+    });
+    throw error;
+  }
 }
 
 export class McpCapabilityGateway implements CapabilityGateway {

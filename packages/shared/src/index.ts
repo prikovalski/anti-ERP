@@ -183,7 +183,21 @@ export const AgentResponseSchema = z.object({
   invoice: ConceptInvoiceSchema.nullable().optional(),
   analyticsResult: AnalyticsResultSchema.nullable().optional(),
   auditEvents: z.array(AuditEventSchema),
-  mode: z.enum(["demo-agent", "openrouter", "fallback"]),
+  mcpTrace: z.array(
+    z.object({
+      id: z.string(),
+      requestId: z.string(),
+      role: z.string(),
+      tool: z.string(),
+      status: z.enum(["success", "error"]),
+      durationMs: z.number().int().nonnegative(),
+      inputSummary: z.record(z.unknown()).nullable().optional(),
+      outputSummary: z.record(z.unknown()).nullable().optional(),
+      error: z.string().nullable().optional(),
+      timestamp: z.string()
+    })
+  ).optional(),
+  mode: z.enum(["demo-agent", "openrouter"]),
   lastOrderId: z.string().nullable().optional()
 });
 

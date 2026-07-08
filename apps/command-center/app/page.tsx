@@ -9,6 +9,7 @@ import type {
   SalesOrderPreview
 } from "@anti-erp/shared";
 import {
+  Activity,
   AlertTriangle,
   Bot,
   Check,
@@ -29,6 +30,13 @@ type Message = {
   role: "user" | "agent";
   text: string;
 };
+
+type ApiErrorResponse = {
+  message?: string;
+  error?: string;
+};
+
+type McpTrace = NonNullable<AgentResponse["mcpTrace"]>;
 
 function createAudit(action: string, summary: string, actor: AuditEvent["actor"] = "mcp-tool"): AuditEvent {
   return {
@@ -74,6 +82,7 @@ export default function CommandCenterPage() {
   const [analyticsResult, setAnalyticsResult] = useState<AnalyticsResult | null>(null);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("demo-agent");
+  const [mcpTrace, setMcpTrace] = useState<McpTrace>([]);
   const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
   const [pending, setPending] = useState(false);
   const [audit, setAudit] = useState<AuditEvent[]>([
@@ -83,6 +92,7 @@ export default function CommandCenterPage() {
   const suggestions = useMemo(
     () => [
       "Crie um pedido para Northstar com 10 notebooks",
+      "Crie o pedido e a NF para Globo com 1 monitor e 1 teclado",
       "Cadastre o cliente Atlas Retail",
       "Cadastre o produto Mouse",
       "Cadastre o fornecedor Delta Supplies",
@@ -105,7 +115,17 @@ export default function CommandCenterPage() {
     setInvoice(response.invoice ?? invoice);
     setAnalyticsResult(response.analyticsResult ?? null);
     setLastOrderId(response.lastOrderId ?? lastOrderId);
+    setMcpTrace(response.mcpTrace ?? []);
     setAudit((current) => [...response.auditEvents, ...current]);
+  }
+
+  async function readApiError(response: Response, fallback: string) {
+    try {
+      const payload = (await response.json()) as ApiErrorResponse;
+      return payload.message ?? fallback;
+    } catch {
+      return fallback;
+    }
   }
 
   async function runIntent(command: string) {
@@ -122,6 +142,7 @@ export default function CommandCenterPage() {
     setOrder(null);
     setInvoice(null);
     setAnalyticsResult(null);
+    setMcpTrace([]);
     setInput("");
 
     try {
@@ -137,17 +158,19 @@ export default function CommandCenterPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Agent request failed with ${response.status}`);
+        throw new Error(await readApiError(response, `Agent request failed with ${response.status}`));
       }
 
       applyAgentResponse((await response.json()) as AgentResponse);
-    } catch {
+    } catch (error) {
       setMessages((current) => [
         ...current,
         {
           id: `agent_error_${Date.now()}`,
           role: "agent",
-          text: "Nao consegui processar esse comando agora. A demo continua segura: nenhuma escrita foi executada."
+          text: error instanceof Error
+            ? error.message
+            : "Nao consegui processar esse comando agora. A demo continua segura: nenhuma escrita foi executada."
         }
       ]);
       setAudit((current) => [
@@ -178,7 +201,7 @@ export default function CommandCenterPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Confirm request failed with ${response.status}`);
+        throw new Error(await readApiError(response, `Confirm request failed with ${response.status}`));
       }
 
       setAudit((current) => [
@@ -187,13 +210,15 @@ export default function CommandCenterPage() {
       ]);
       applyAgentResponse((await response.json()) as AgentResponse);
       setPreview(null);
-    } catch {
+    } catch (error) {
       setMessages((current) => [
         ...current,
         {
           id: `agent_confirm_error_${Date.now()}`,
           role: "agent",
-          text: "Nao consegui confirmar o pedido agora. Nenhuma criacao foi aplicada."
+          text: error instanceof Error
+            ? error.message
+            : "Nao consegui confirmar o pedido agora. Nenhuma criacao foi aplicada."
         }
       ]);
       setAudit((current) => [
@@ -221,7 +246,7 @@ export default function CommandCenterPage() {
               </div>
               <div className="flex items-center gap-2 rounded-full border border-line px-3 py-2 text-sm text-steel">
                 <Sparkles className="h-4 w-4" aria-hidden="true" />
-                {agentMode === "openrouter" ? "OpenRouter assisted" : agentMode === "fallback" ? "fallback mode" : "demo-safe mode"}
+                {agentMode === "openrouter" ? "OpenRouter assisted" : "demo-safe mode"}
               </div>
             </header>
 
@@ -366,20 +391,29 @@ export default function CommandCenterPage() {
             </div>
           </div>
 
-          <aside className="grid gap-6 lg:grid-rows-[auto_auto_1fr]">
+          <aside className="grid gap-6">
             <section className="rounded-lg border border-line bg-white p-5 shadow-panel">
               <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-steel">
                 <GitBranch className="h-4 w-4" aria-hidden="true" />
                 MCP-native architecture
               </div>
               <div className="grid gap-2 text-sm">
-                {["Command Center", "Agent", "MCP Client", "anti-ERP MCP Server", "Domain Services", "Database"].map(
-                  (step) => (
-                    <div key={step} className="rounded-md border border-line px-3 py-2">
-                      {step}
-                    </div>
-                  )
-                )}
+                {[
+                  "Command Center",
+                  "Agent",
+                  "MCP Client",
+                  "Customers MCP",
+                  "Products MCP",
+                  "Suppliers MCP",
+                  "Sales Orders MCP",
+                  "Invoices MCP",
+                  "Analytics MCP",
+                  "Database"
+                ].map((step) => (
+                  <div key={step} className="rounded-md border border-line px-3 py-2">
+                    {step}
+                  </div>
+                ))}
               </div>
             </section>
 
@@ -438,6 +472,8 @@ export default function CommandCenterPage() {
               )}
             </section>
 
+            <ExecutionTrace trace={mcpTrace} />
+
             <section className="rounded-lg border border-line bg-white p-5 shadow-panel">
               <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-steel">
                 <Clock3 className="h-4 w-4" aria-hidden="true" />
@@ -468,6 +504,42 @@ function Metric({ label, value }: { label: string; value: string }) {
       <p className="text-xs font-semibold uppercase text-steel">{label}</p>
       <p className="mt-1 break-words text-base font-semibold text-ink">{value}</p>
     </div>
+  );
+}
+
+function ExecutionTrace({ trace }: { trace: McpTrace }) {
+  return (
+    <section className="rounded-lg border border-line bg-white p-5 shadow-panel">
+      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-steel">
+        <Activity className="h-4 w-4" aria-hidden="true" />
+        Execution trace
+      </div>
+      {trace.length > 0 ? (
+        <div className="space-y-2">
+          {trace.map((entry) => (
+            <div key={entry.id} className="rounded-md border border-line bg-[#fbfaf7] px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-ink">
+                  {entry.role}.{entry.tool}
+                </span>
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                    entry.status === "success" ? "bg-[#e9f6f3] text-signal" : "bg-[#fff3ef] text-coral"
+                  }`}
+                >
+                  {entry.status} · {entry.durationMs}ms
+                </span>
+              </div>
+              {entry.error ? (
+                <p className="mt-2 text-xs leading-5 text-coral">{entry.error}</p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm leading-6 text-steel">MCP calls from the latest command will appear here.</p>
+      )}
+    </section>
   );
 }
 
