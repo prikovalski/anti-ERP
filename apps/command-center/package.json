@@ -8,6 +8,7 @@
     "build": "next build",
     "langgraph:dev": "langgraphjs dev --config ../../langgraph.json",
     "lint": "tsc --noEmit",
+    "test": "tsx --test lib/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

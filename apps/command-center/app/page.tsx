@@ -81,12 +81,12 @@ export default function CommandCenterPage() {
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
   const [analyticsResult, setAnalyticsResult] = useState<AnalyticsResult | null>(null);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
-  const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("demo-agent");
+  const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("langgraph");
   const [mcpTrace, setMcpTrace] = useState<McpTrace>([]);
   const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
   const [pending, setPending] = useState(false);
   const [audit, setAudit] = useState<AuditEvent[]>([
-    createAudit("session_started", "Command Center opened in demo-safe mode.", "system")
+    createAudit("session_started", "Command Center opened in LangGraph mode.", "system")
   ]);
 
   const suggestions = useMemo(
@@ -246,7 +246,7 @@ export default function CommandCenterPage() {
               </div>
               <div className="flex items-center gap-2 rounded-full border border-line px-3 py-2 text-sm text-steel">
                 <Sparkles className="h-4 w-4" aria-hidden="true" />
-                {agentMode === "openrouter" ? "OpenRouter assisted" : "demo-safe mode"}
+                {agentMode === "openrouter" ? "OpenRouter assisted" : "LangGraph mode"}
               </div>
             </header>
 

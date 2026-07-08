@@ -197,7 +197,7 @@ export const AgentResponseSchema = z.object({
       timestamp: z.string()
     })
   ).optional(),
-  mode: z.enum(["demo-agent", "openrouter"]),
+  mode: z.enum(["langgraph", "openrouter"]),
   lastOrderId: z.string().nullable().optional()
 });
 

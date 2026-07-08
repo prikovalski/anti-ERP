@@ -37,7 +37,7 @@ export async function confirmSalesOrder(
     : null;
 
   return {
-    mode: "demo-agent",
+    mode: "langgraph",
     order,
     invoice,
     message: {

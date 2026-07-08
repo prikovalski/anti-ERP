@@ -189,7 +189,7 @@ export async function runAgentGraph(input: AgentGraphInput) {
   const result = await antiErpAgentGraph.invoke({
     message: normalizeInputMessage(input.message),
     lastOrderId: input.lastOrderId,
-    mode: process.env.OPENROUTER_API_KEY ? "openrouter" : "demo-agent",
+    mode: process.env.OPENROUTER_API_KEY ? "openrouter" : "langgraph",
     intent: null,
     gateway: null,
     route: null,
@@ -247,7 +247,7 @@ async function inferOpenRouterIntentNode(state: typeof AgentGraphState.State) {
   const message = normalizeInputMessage(state.message);
   if (!message || !process.env.OPENROUTER_API_KEY) {
     return {
-      mode: "demo-agent" satisfies AgentResponse["mode"]
+      mode: "langgraph" satisfies AgentResponse["mode"]
     };
   }
 
@@ -279,7 +279,7 @@ async function inferOpenRouterIntentNode(state: typeof AgentGraphState.State) {
       error
     });
     return {
-      mode: "demo-agent" satisfies AgentResponse["mode"]
+      mode: "langgraph" satisfies AgentResponse["mode"]
     };
   }
 }
