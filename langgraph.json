@@ -1,0 +1,7 @@
+{
+  "node_version": "20",
+  "env": "apps/command-center/.env.local",
+  "graphs": {
+    "anti_erp_agent": "./apps/command-center/lib/agent/agent-graph.ts:antiErpAgentGraph"
+  }
+}

@@ -18,7 +18,8 @@
     "mcp:sales-orders:dev": "pnpm --filter @anti-erp/mcp-sales-orders dev",
     "mcp:invoices:dev": "pnpm --filter @anti-erp/mcp-invoices dev",
     "mcp:analytics:dev": "pnpm --filter @anti-erp/mcp-analytics dev",
-    "command-center:dev": "pnpm --filter @anti-erp/command-center dev"
+    "command-center:dev": "pnpm --filter @anti-erp/command-center dev",
+    "langgraph:dev": "pnpm --filter @anti-erp/command-center langgraph:dev"
   },
   "keywords": [
     "mcp",

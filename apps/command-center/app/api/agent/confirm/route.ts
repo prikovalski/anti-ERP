@@ -2,7 +2,7 @@ import { AgentConfirmRequestSchema, AgentResponseSchema } from "@anti-erp/shared
 import { NextResponse } from "next/server";
 import { confirmSalesOrder } from "@/lib/agent/demo-agent";
 import { getCapabilityGateway } from "@/lib/capabilities";
-import { withMcpTrace } from "@/lib/observability/mcp-trace";
+import { recordAgentStep, withMcpTrace } from "@/lib/observability/mcp-trace";
 
 function capabilityFailureResponse() {
   return NextResponse.json(
@@ -27,8 +27,29 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { result: response, trace } = await withMcpTrace(async () =>
-      confirmSalesOrder(await getCapabilityGateway(), body.preview, body.createInvoice)
+    const { result: response, trace } = await withMcpTrace(
+      {
+        name: "agent.confirm_sales_order",
+        inputs: {
+          customerId: body.preview.customer.id,
+          lineCount: body.preview.lines.length,
+          createInvoice: body.createInvoice
+        },
+        tags: ["confirmation"]
+      },
+      async () => {
+        await recordAgentStep({
+          name: "user_confirmation_received",
+          status: "success",
+          durationMs: 0,
+          outputs: {
+            customerId: body.preview.customer.id,
+            lineCount: body.preview.lines.length,
+            createInvoice: body.createInvoice
+          }
+        });
+        return confirmSalesOrder(await getCapabilityGateway(), body.preview, body.createInvoice);
+      }
     );
     return NextResponse.json(AgentResponseSchema.parse({ ...response, mcpTrace: trace }));
   } catch (error) {

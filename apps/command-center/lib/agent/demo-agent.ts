@@ -3,7 +3,7 @@ import {
   AuditEvent,
   SalesOrderPreview
 } from "@anti-erp/shared";
-import type { CapabilityGateway } from "@/lib/capabilities";
+import type { CapabilityGateway } from "../capabilities";
 import type { AgentIntent } from "./openrouter";
 
 function now() {

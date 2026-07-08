@@ -19,6 +19,7 @@ export type McpTraceEntry = {
 type McpTraceContext = {
   requestId: string;
   entries: McpTraceEntry[];
+  rootRun?: LangSmithRunTree | null;
 };
 
 const traceStorage = new AsyncLocalStorage<McpTraceContext>();
@@ -40,12 +41,69 @@ function createId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export async function withMcpTrace<T>(operation: () => Promise<T>) {
+type LangSmithRunTree = {
+  createChild(config: { name: string } & Record<string, unknown>): LangSmithRunTree;
+  postRun(): Promise<void>;
+  patchRun(): Promise<void>;
+  end(outputs?: Record<string, unknown>, error?: string, endTime?: number, metadata?: Record<string, unknown>): Promise<void>;
+};
+
+function getLangSmithApiKey() {
+  if (process.env.LANGSMITH_TRACING === "false") {
+    return null;
+  }
+  return process.env.LANGSMITH_API_KEY ?? process.env.LANGCHAIN_API_KEY ?? null;
+}
+
+export async function withMcpTrace<T>(
+  config: {
+    name: string;
+    inputs?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+    tags?: string[];
+  },
+  operation: () => Promise<T>
+) {
   const context: McpTraceContext = {
     requestId: createId("req"),
-    entries: []
+    entries: [],
+    rootRun: null
   };
-  const result = await traceStorage.run(context, operation);
+  context.rootRun = await createLangSmithRootRun({
+    name: config.name,
+    requestId: context.requestId,
+    inputs: config.inputs ?? {},
+    metadata: config.metadata ?? {},
+    tags: config.tags ?? []
+  });
+
+  const result = await traceStorage.run(context, async () => {
+    await withTimeout(context.rootRun?.postRun() ?? Promise.resolve(), 2500);
+    try {
+      const output = await operation();
+      await withTimeout(
+        finalizeLangSmithRootRun(context.rootRun, {
+          status: "success",
+          entries: context.entries.length
+        }),
+        2500
+      );
+      return output;
+    } catch (error) {
+      await withTimeout(
+        finalizeLangSmithRootRun(
+          context.rootRun,
+          {
+            status: "error",
+            entries: context.entries.length
+          },
+          summarizeError(error)
+        ),
+        2500
+      );
+      throw error;
+    }
+  });
   return {
     result,
     trace: context.entries
@@ -54,6 +112,42 @@ export async function withMcpTrace<T>(operation: () => Promise<T>) {
 
 export function getCurrentMcpRequestId() {
   return traceStorage.getStore()?.requestId ?? createId("req");
+}
+
+export async function recordAgentStep(input: {
+  name: string;
+  status: McpTraceStatus;
+  durationMs: number;
+  inputs?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  error?: unknown;
+}) {
+  const context = traceStorage.getStore();
+  const timestamp = new Date().toISOString();
+  const entry = {
+    requestId: context?.requestId ?? createId("req"),
+    name: input.name,
+    status: input.status,
+    durationMs: Math.max(0, Math.round(input.durationMs)),
+    inputSummary: summarize(input.inputs ?? {}),
+    outputSummary: input.status === "success" ? summarize(input.outputs ?? {}) : null,
+    error: input.status === "error" ? summarizeError(input.error) : null,
+    timestamp
+  };
+
+  console.info(JSON.stringify({ event: "agent_step", ...entry }));
+  await withTimeout(sendLangSmithChildRun(context?.rootRun ?? null, {
+    name: `agent.${input.name}`,
+    runType: "chain",
+    tags: ["anti-erp", "agent", input.name],
+    requestId: entry.requestId,
+    status: entry.status,
+    durationMs: entry.durationMs,
+    inputSummary: entry.inputSummary,
+    outputSummary: entry.outputSummary,
+    error: entry.error,
+    timestamp
+  }), 2500);
 }
 
 export async function recordMcpCall(input: {
@@ -81,7 +175,7 @@ export async function recordMcpCall(input: {
 
   context?.entries.push(entry);
   console.info(JSON.stringify({ event: "mcp_call", ...entry }));
-  await Promise.allSettled([persistMcpTrace(entry), withTimeout(sendLangSmithTrace(entry), 2500)]);
+  await Promise.allSettled([persistMcpTrace(entry), withTimeout(sendLangSmithMcpTrace(context?.rootRun ?? null, entry), 2500)]);
 }
 
 function summarize(value: unknown): Record<string, unknown> {
@@ -199,38 +293,114 @@ async function persistMcpTrace(entry: McpTraceEntry) {
   });
 }
 
-async function sendLangSmithTrace(entry: McpTraceEntry) {
-  if (!process.env.LANGSMITH_API_KEY) {
-    return;
+async function createLangSmithRootRun(input: {
+  name: string;
+  requestId: string;
+  inputs: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  tags: string[];
+}): Promise<LangSmithRunTree | null> {
+  const apiKey = getLangSmithApiKey();
+  if (!apiKey) {
+    return null;
   }
 
   const { RunTree } = await import("langsmith/run_trees");
-  const run = new RunTree({
-    name: `mcp.${entry.role}.${entry.tool}`,
-    run_type: "tool",
+  const { Client } = await import("langsmith");
+  const client = new Client({
+    apiKey,
+    apiUrl: process.env.LANGSMITH_ENDPOINT ?? process.env.LANGCHAIN_ENDPOINT,
+    workspaceId: process.env.LANGSMITH_WORKSPACE_ID ?? process.env.LANGCHAIN_WORKSPACE_ID,
+    hideInputs: (values) => summarize(values),
+    hideOutputs: (values) => summarize(values),
+    hideMetadata: (values) => summarize(values)
+  });
+  return new RunTree({
+    name: input.name,
+    run_type: "chain",
+    client,
     project_name: process.env.LANGSMITH_PROJECT ?? "anti-erp",
     inputs: {
-      requestId: entry.requestId,
-      role: entry.role,
-      tool: entry.tool,
-      inputSummary: entry.inputSummary ?? {}
+      requestId: input.requestId,
+      ...summarize(input.inputs)
     },
-    outputs: entry.status === "success" ? { outputSummary: entry.outputSummary ?? {} } : undefined,
-    error: entry.error ?? undefined,
-    tags: ["anti-erp", "mcp", entry.role, entry.tool],
+    tags: ["anti-erp", "agent-flow", ...input.tags],
     metadata: {
-      requestId: entry.requestId,
-      role: entry.role,
-      tool: entry.tool,
-      status: entry.status,
-      durationMs: entry.durationMs
+      requestId: input.requestId,
+      ...summarize(input.metadata)
+    }
+  }) as LangSmithRunTree;
+}
+
+async function finalizeLangSmithRootRun(
+  run: LangSmithRunTree | null | undefined,
+  outputs: Record<string, unknown>,
+  error?: string
+) {
+  if (!run) {
+    return;
+  }
+
+  await run.end(summarize(outputs), error);
+  await run.patchRun();
+}
+
+async function sendLangSmithMcpTrace(rootRun: LangSmithRunTree | null, entry: McpTraceEntry) {
+  await sendLangSmithChildRun(rootRun, {
+    name: `mcp.${entry.role}.${entry.tool}`,
+    runType: "tool",
+    tags: ["anti-erp", "mcp", entry.role, entry.tool],
+    requestId: entry.requestId,
+    status: entry.status,
+    durationMs: entry.durationMs,
+    inputSummary: entry.inputSummary ?? {},
+    outputSummary: entry.outputSummary ?? {},
+    error: entry.error ?? null,
+    timestamp: entry.timestamp
+  });
+}
+
+async function sendLangSmithChildRun(
+  rootRun: LangSmithRunTree | null,
+  input: {
+    name: string;
+    runType: string;
+    tags: string[];
+    requestId: string;
+    status: McpTraceStatus;
+    durationMs: number;
+    inputSummary: Record<string, unknown>;
+    outputSummary?: Record<string, unknown> | null;
+    error?: string | null;
+    timestamp: string;
+  }
+) {
+  if (!rootRun || !getLangSmithApiKey()) {
+    return;
+  }
+
+  const child = rootRun.createChild({
+    name: input.name,
+    run_type: input.runType,
+    inputs: {
+      requestId: input.requestId,
+      inputSummary: input.inputSummary
     },
-    start_time: new Date(new Date(entry.timestamp).getTime() - entry.durationMs).toISOString(),
-    end_time: entry.timestamp
+    tags: input.tags,
+    metadata: {
+      requestId: input.requestId,
+      status: input.status,
+      durationMs: input.durationMs
+    },
+    start_time: new Date(new Date(input.timestamp).getTime() - input.durationMs).toISOString()
   });
 
-  await run.postRun();
-  await run.patchRun();
+  await child.postRun();
+  await child.end(
+    input.status === "success" ? { outputSummary: input.outputSummary ?? {} } : undefined,
+    input.error ?? undefined
+  );
+  await child.patchRun();
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {

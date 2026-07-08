@@ -10,7 +10,7 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
-import { recordMcpCall } from "@/lib/observability/mcp-trace";
+import { recordMcpCall } from "../observability/mcp-trace";
 import type { CapabilityGateway } from "./types";
 
 type McpServerRole =
