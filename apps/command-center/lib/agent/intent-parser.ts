@@ -130,7 +130,10 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
   const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
   const asksTraditionalFlow = /\b(tradicional|erp classico|erp tradicional|compar)/.test(normalized);
   const asksList = /\b(liste|listar|recentes|hoje|criados)\b/.test(normalized);
-  const asksAnalytics = /\b(quantos|quanto|qual|ranking|vendemos|vendidos|vendeu|saindo|saida|comprou|compraram|faturamento|receita)\b/.test(normalized);
+  const asksAnalytics = /\b(quantos|quanto|qual|quais|ranking|vendemos|vendidos|vendeu|venderam|saindo|saida|saiu|comprou|compraram|faturamento|receita)\b/.test(normalized);
+  const analyticsMetric = inferAnalyticsMetric(normalized);
+  const analyticsGroupBy = inferAnalyticsGroupBy(normalized);
+  const analyticsProductQueries = inferProductQueries(normalized);
   const dateRange = normalized.includes("semana")
     ? "last_7_days"
     : normalized.includes("mes")
@@ -205,31 +208,24 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
           : normalized.includes("northstar")
             ? "northstar"
             : null,
-      productQuery: normalized.includes("monitor")
-        ? "monitor"
-        : normalized.includes("teclado")
-          ? "teclado"
-          : normalized.includes("notebook")
-            ? "notebook"
-            : null,
+      productQuery: analyticsProductQueries.length > 1
+        ? null
+        : normalized.includes("monitor")
+          ? "monitor"
+          : normalized.includes("teclado")
+            ? "teclado"
+            : normalized.includes("notebook")
+              ? "notebook"
+              : null,
       catalogName: null,
       productUpdate: null,
       quantity: null,
       wantsInvoice: false,
       analytics: {
-        metric: /\b(quanto|faturamento|receita|vendemos|comprou|compraram)\b/.test(normalized) && !/\bquantos\b/.test(normalized)
-          ? "revenue"
-          : /\b(pedidos|pedido)\b/.test(normalized)
-            ? "order_count"
-            : "units_sold",
-        groupBy: normalized.includes("produto") || normalized.includes("produtos")
-          ? "product"
-          : normalized.includes("cliente") || normalized.includes("clientes")
-            ? "customer"
-            : normalized.includes("dia")
-              ? "day"
-              : null,
-        dateRange
+        metric: analyticsMetric,
+        groupBy: analyticsGroupBy,
+        dateRange,
+        productQueries: analyticsProductQueries.length ? analyticsProductQueries : null
       },
       confidence: 0.82
     };
@@ -307,6 +303,48 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
     ...createUnknownIntent(),
     confidence: 0.4
   };
+}
+
+function inferAnalyticsMetric(normalized: string) {
+  if (/\b(pedidos|pedido)\b/.test(normalized) && /\b(quantos|quantidade|total)\b/.test(normalized)) {
+    return "order_count" as const;
+  }
+  if (/\b(faturamento|receita|valor|quanto)\b/.test(normalized) && !/\bquantos\b/.test(normalized)) {
+    return "revenue" as const;
+  }
+  if (/\bcomprou|compraram\b/.test(normalized) && /\bfaturamento|receita|valor\b/.test(normalized)) {
+    return "revenue" as const;
+  }
+  return "units_sold" as const;
+}
+
+function inferAnalyticsGroupBy(normalized: string) {
+  if (/\b(compare|comparar|comparativo|versus|vs\.?|contra|entre)\b/.test(normalized)) {
+    return "product" as const;
+  }
+  if (/\bpor\s+cliente\b|\bclientes\b|\bquais\s+clientes\b/.test(normalized)) {
+    return "customer" as const;
+  }
+  if (/\bpor\s+produto\b|\bprodutos\b|\branking\b|\bmais\s+(venderam|vendeu|sairam|saiu)\b|\bo\s+que\s+mais\s+saiu\b/.test(normalized)) {
+    return "product" as const;
+  }
+  if (/\bpor\s+dia\b|\bdia\s+a\s+dia\b/.test(normalized)) {
+    return "day" as const;
+  }
+  return null;
+}
+
+function inferProductQueries(normalized: string) {
+  const products = [
+    /\bmonitores?\b/.test(normalized) ? "monitor" : null,
+    /\bnotebooks?\b/.test(normalized) ? "notebook" : null,
+    /\bteclados?\b/.test(normalized) ? "teclado" : null
+  ].filter((product): product is string => Boolean(product));
+
+  if (!/\b(compare|comparar|comparativo|versus|vs\.?|contra|entre)\b/.test(normalized) && products.length < 2) {
+    return [];
+  }
+  return products;
 }
 
 function createUnknownIntent(): AgentIntent {

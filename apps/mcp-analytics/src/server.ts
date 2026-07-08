@@ -27,6 +27,7 @@ server.tool(
   {
     metric: z.enum(["units_sold", "revenue", "order_count"]),
     productQuery: z.string().nullable().optional(),
+    productQueries: z.array(z.string().min(1)).nullable().optional(),
     customerQuery: z.string().nullable().optional(),
     dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]),
     groupBy: z.enum(["product", "customer", "day"]).nullable().optional()

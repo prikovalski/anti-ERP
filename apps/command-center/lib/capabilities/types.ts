@@ -46,6 +46,7 @@ export interface CapabilityGateway {
   querySalesMetrics(input: {
     metric: AnalyticsMetric;
     productQuery?: string | null;
+    productQueries?: string[] | null;
     customerQuery?: string | null;
     dateRange: AnalyticsDateRange;
     groupBy?: AnalyticsGroupBy | null;

@@ -589,13 +589,14 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   async querySalesMetrics(input: {
     metric: "units_sold" | "revenue" | "order_count";
     productQuery?: string | null;
+    productQueries?: string[] | null;
     customerQuery?: string | null;
     dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
     groupBy?: "product" | "customer" | "day" | null;
   }) {
     await ensureSeeded();
     const range = resolveDateRange(input.dateRange);
-    const productQuery = normalize(input.productQuery ?? "");
+    const productQueries = normalizeProductQueries(input.productQuery, input.productQueries);
     const customerQuery = normalize(input.customerQuery ?? "");
     const orders = await prisma.salesOrder.findMany({
       where: range
@@ -618,11 +619,13 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
     const filteredOrders = orders.filter((order) => {
       const matchesCustomer = customerQuery ? normalize(order.customer.name).includes(customerQuery) : true;
-      const matchesProduct = productQuery
+      const matchesProduct = productQueries.length
         ? order.lines.some(
             (line) =>
-              normalize(line.product.name).includes(productQuery) ||
-              normalize(line.product.sku).includes(productQuery)
+              productQueries.some((productQuery) =>
+                normalize(line.product.name).includes(productQuery) ||
+                normalize(line.product.sku).includes(productQuery)
+              )
           )
         : true;
       return matchesCustomer && matchesProduct;
@@ -630,8 +633,11 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
     const filteredLines = filteredOrders.flatMap((order) =>
       order.lines.filter((line) =>
-        productQuery
-          ? normalize(line.product.name).includes(productQuery) || normalize(line.product.sku).includes(productQuery)
+        productQueries.length
+          ? productQueries.some((productQuery) =>
+              normalize(line.product.name).includes(productQuery) ||
+              normalize(line.product.sku).includes(productQuery)
+            )
           : true
       )
     );
@@ -643,10 +649,11 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           ? fromCents(filteredLines.reduce((sum, line) => sum + line.totalCents, 0))
           : filteredOrders.length;
 
-    const rows = buildMetricRows(input.groupBy, input.metric, filteredOrders);
+    const rows = buildMetricRows(input.groupBy, input.metric, filteredOrders, productQueries);
     await audit("query_sales_metrics", `Queried ${input.metric} for ${input.dateRange}`, {
       metric: input.metric,
       productQuery: input.productQuery ?? null,
+      productQueries: input.productQueries ?? null,
       customerQuery: input.customerQuery ?? null,
       dateRange: input.dateRange,
       value
@@ -655,9 +662,10 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return {
       metric: input.metric,
       value,
-      label: buildMetricLabel(input.metric, input.productQuery, input.dateRange),
+      label: buildMetricLabel(input.metric, input.productQuery ?? input.productQueries?.join(", "), input.dateRange),
       query: buildAnalyticsQuery({
         ...input,
+        productQueries,
         dataSource: "postgres"
       }),
       rows
@@ -697,6 +705,7 @@ function buildMetricLabel(metric: string, productQuery: string | null | undefine
 
 function buildAnalyticsQuery(input: {
   productQuery?: string | null;
+  productQueries?: string[] | null;
   customerQuery?: string | null;
   dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
   groupBy?: "product" | "customer" | "day" | null;
@@ -710,12 +719,20 @@ function buildAnalyticsQuery(input: {
     filters: [
       { label: "period", value: input.dateRange.replaceAll("_", " ") },
       input.productQuery ? { label: "product", value: input.productQuery } : null,
+      input.productQueries?.length ? { label: "products", value: input.productQueries.join(", ") } : null,
       input.customerQuery ? { label: "customer", value: input.customerQuery } : null
     ].filter((filter): filter is { label: string; value: string } => Boolean(filter)),
     groupBy: input.groupBy ?? null,
     dateRange: input.dateRange,
     dataSource: input.dataSource
   };
+}
+
+function normalizeProductQueries(productQuery?: string | null, productQueries?: string[] | null) {
+  const queries = (productQueries?.length ? productQueries : [productQuery])
+    .map((query) => normalize(query ?? ""))
+    .filter(Boolean);
+  return Array.from(new Set(queries));
 }
 
 function buildMetricRows(
@@ -727,9 +744,10 @@ function buildMetricRows(
     lines: Array<{
       quantity: number;
       totalCents: number;
-      product: { name: string };
+      product: { name: string; sku: string };
     }>;
-  }>
+  }>,
+  productQueries: string[]
 ) {
   if (!groupBy) {
     return [];
@@ -737,14 +755,26 @@ function buildMetricRows(
 
   const rows = new Map<string, number>();
   for (const order of orders) {
+    const matchingLines = productQueries.length
+      ? order.lines.filter(
+          (line) =>
+            productQueries.some((productQuery) =>
+              normalize(line.product.name).includes(productQuery) ||
+              normalize(line.product.sku).includes(productQuery)
+            )
+        )
+      : order.lines;
     const labels =
       groupBy === "customer"
-        ? [{ label: order.customer.name, lines: order.lines }]
+        ? [{ label: order.customer.name, lines: matchingLines }]
         : groupBy === "day"
-          ? [{ label: order.createdAt.toISOString().slice(0, 10), lines: order.lines }]
-          : order.lines.map((line) => ({ label: line.product.name, lines: [line] }));
+          ? [{ label: order.createdAt.toISOString().slice(0, 10), lines: matchingLines }]
+          : matchingLines.map((line) => ({ label: line.product.name, lines: [line] }));
 
     for (const item of labels) {
+      if (item.lines.length === 0) {
+        continue;
+      }
       const increment =
         metric === "units_sold"
           ? item.lines.reduce((sum, line) => sum + line.quantity, 0)

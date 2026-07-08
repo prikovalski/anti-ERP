@@ -128,6 +128,7 @@ export const AnalyticsGroupBySchema = z.enum(["product", "customer", "day"]);
 export const QuerySalesMetricsInputSchema = z.object({
   metric: AnalyticsMetricSchema,
   productQuery: z.string().nullable().optional(),
+  productQueries: z.array(z.string().min(1)).nullable().optional(),
   customerQuery: z.string().nullable().optional(),
   dateRange: AnalyticsDateRangeSchema,
   groupBy: AnalyticsGroupBySchema.nullable().optional()

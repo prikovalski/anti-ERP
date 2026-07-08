@@ -51,6 +51,7 @@ type ProductUpdateCommand = {
 type AnalyticsQuery = {
   metric: AnalyticsMetric;
   productQuery: string | null;
+  productQueries: string[] | null;
   customerQuery: string | null;
   dateRange: AnalyticsDateRange;
   groupBy: AnalyticsGroupBy | null;
@@ -516,6 +517,7 @@ async function buildAnalyticsQueryNode(state: typeof AgentGraphState.State) {
       ? {
           metric: analytics.metric,
           productQuery: state.intent.productQuery,
+          productQueries: analytics.productQueries ?? null,
           customerQuery: state.intent.customerQuery,
           dateRange: analytics.dateRange,
           groupBy: analytics.groupBy
@@ -1323,7 +1325,10 @@ function createAnalyticsResponse(state: typeof AgentGraphState.State): AgentResp
         analyticsResult.metric,
         analyticsResult.value,
         analyticsQuery.productQuery,
-        analyticsQuery.dateRange
+        analyticsQuery.productQueries,
+        analyticsQuery.dateRange,
+        analyticsQuery.groupBy,
+        analyticsResult.rows
       )
     },
     auditEvents: [audit("query_sales_metrics", `Queried ${analyticsResult.label}.`)],
@@ -1348,7 +1353,10 @@ function formatAnalyticsAnswer(
   metric: AnalyticsMetric,
   value: number,
   productQuery: string | null,
-  dateRange: AnalyticsDateRange
+  productQueries: string[] | null,
+  dateRange: AnalyticsDateRange,
+  groupBy: AnalyticsGroupBy | null,
+  rows: Array<{ label: string; value: number }>
 ) {
   const period =
     dateRange === "today"
@@ -1358,15 +1366,50 @@ function formatAnalyticsAnswer(
         : dateRange === "month_to_date"
           ? "neste mes"
           : "no historico";
-  const subject = productQuery ? `${productQuery}` : "vendas";
+  const subject = productQueries?.length
+    ? productQueries.join(" e ")
+    : productQuery ? `${productQuery}` : metric === "units_sold" ? "produtos" : "vendas";
 
   if (metric === "revenue") {
-    return `O faturamento de ${subject} ${period} foi ${money(value)}.`;
+    return appendAnalyticsRows(`O faturamento de ${subject} ${period} foi ${money(value)}.`, metric, groupBy, rows);
   }
   if (metric === "order_count") {
-    return `Foram criados ${value} pedido(s) ${period}.`;
+    return appendAnalyticsRows(`Foram criados ${value} pedido(s) ${period}.`, metric, groupBy, rows);
   }
-  return `Foram vendidas ${value} unidade(s) de ${subject} ${period}.`;
+  return appendAnalyticsRows(`Foram vendidas ${value} unidade(s) de ${subject} ${period}.`, metric, groupBy, rows);
+}
+
+function appendAnalyticsRows(
+  base: string,
+  metric: AnalyticsMetric,
+  groupBy: AnalyticsGroupBy | null,
+  rows: Array<{ label: string; value: number }>
+) {
+  if (!groupBy || rows.length === 0) {
+    return base;
+  }
+
+  const groupLabel =
+    groupBy === "customer"
+      ? "Por cliente"
+      : groupBy === "product"
+        ? "Por produto"
+        : "Por dia";
+  const rowSummary = rows
+    .slice(0, 5)
+    .map((row) => `${row.label}: ${formatAnalyticsRowMetric(metric, row.value)}`)
+    .join("; ");
+  return `${base} ${groupLabel}: ${rowSummary}.`;
+}
+
+function formatAnalyticsRowMetric(metric: AnalyticsMetric, value: number) {
+  if (metric === "revenue") {
+    return money(value);
+  }
+  if (metric === "order_count") {
+    return `${value} pedido(s)`;
+  }
+  return `${value} unidade(s)`;
 }
 
 async function searchProductWithFallback(gateway: CapabilityGateway, productQuery: string) {

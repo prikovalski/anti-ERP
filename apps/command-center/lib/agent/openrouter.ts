@@ -33,7 +33,8 @@ const IntentSchema = z.object({
   analytics: z.object({
     metric: z.enum(["units_sold", "revenue", "order_count"]).nullable(),
     groupBy: z.enum(["product", "customer", "day"]).nullable(),
-    dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable()
+    dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable(),
+    productQueries: z.array(z.string()).nullable().optional()
   }).nullable(),
   confidence: z.number().min(0).max(1)
 });
@@ -115,11 +116,25 @@ function normalizePlannerPayload(raw: unknown, message: string) {
     analytics.metric = mapMetric(analytics.metric);
     analytics.groupBy = mapGroupBy(analytics.groupBy);
     analytics.dateRange = mapDateRange(analytics.dateRange);
+    analytics.productQueries = normalizeProductQueries(analytics.productQueries);
   }
 
   const inferredCatalogName = inferCatalogName(message);
   const inferredProductUpdate = inferProductUpdate(message);
   const inferredOrder = inferOrderRequest(message);
+  const inferredAnalytics = inferAnalyticsRequest(message);
+  const normalizedAnalytics =
+    analytics || inferredAnalytics
+      ? {
+          metric: inferredAnalytics?.metric ?? analytics?.metric ?? null,
+          groupBy: inferredAnalytics?.groupBy ?? analytics?.groupBy ?? null,
+          dateRange: inferredAnalytics?.dateRange ?? analytics?.dateRange ?? "all_time",
+          productQueries: inferredAnalytics?.productQueries ?? analytics?.productQueries ?? null
+        }
+      : null;
+  const comparisonProductQueries = Array.isArray(normalizedAnalytics?.productQueries)
+    ? normalizedAnalytics.productQueries
+    : null;
 
   return {
     ...payload,
@@ -129,14 +144,53 @@ function normalizePlannerPayload(raw: unknown, message: string) {
         ? "create_order"
         : payload.intent,
     customerQuery: inferredOrder?.customerQuery ?? (typeof payload.customerQuery === "string" ? payload.customerQuery : inferCustomerQuery(message)),
-    productQuery: inferredProductUpdate?.productQuery ?? inferredOrder?.orderLines[0]?.productQuery ?? (typeof payload.productQuery === "string" ? payload.productQuery : inferProductQuery(message)),
+    productQuery: inferredProductUpdate?.productQuery
+      ?? inferredOrder?.orderLines[0]?.productQuery
+      ?? (comparisonProductQueries && comparisonProductQueries.length > 1
+        ? null
+        : typeof payload.productQuery === "string" ? payload.productQuery : inferProductQuery(message)),
     catalogName: inferredCatalogName ?? (typeof payload.catalogName === "string" ? cleanCatalogName(payload.catalogName) : null),
     productUpdate: inferredProductUpdate ?? normalizeProductUpdate(payload.productUpdate),
     quantity: inferredOrder?.orderLines[0]?.quantity ?? normalizeQuantity(payload.quantity),
     orderLines: inferredOrder?.orderLines ?? normalizeOrderLines(payload.orderLines),
     wantsInvoice: inferredOrder?.wantsInvoice ?? Boolean(payload.wantsInvoice),
-    analytics,
+    analytics: normalizedAnalytics,
     confidence: normalizeConfidence(payload.confidence)
+  };
+}
+
+function inferAnalyticsRequest(message: string) {
+  const normalized = normalizeText(message);
+  const metric = /\b(pedidos|pedido)\b/.test(normalized) && /\b(quantos|quantidade|total)\b/.test(normalized)
+    ? "order_count"
+    : /\b(faturamento|receita|valor|quanto)\b/.test(normalized) && !/\bquantos\b/.test(normalized)
+      ? "revenue"
+      : null;
+  const groupBy = /\bpor\s+cliente\b|\bclientes\b|\bquais\s+clientes\b/.test(normalized)
+    ? "customer"
+    : /\bpor\s+produto\b|\bprodutos\b|\branking\b/.test(normalized)
+      ? "product"
+      : /\bpor\s+dia\b|\bdia\s+a\s+dia\b/.test(normalized)
+        ? "day"
+        : null;
+  const dateRange = normalized.includes("semana")
+    ? "last_7_days"
+    : normalized.includes("mes")
+      ? "month_to_date"
+      : normalized.includes("hoje")
+        ? "today"
+        : null;
+  const productQueries = inferProductQueries(message);
+
+  if (!metric && !groupBy && !dateRange && !productQueries.length) {
+    return null;
+  }
+
+  return {
+    metric,
+    groupBy,
+    dateRange,
+    productQueries: productQueries.length ? productQueries : null
   };
 }
 
@@ -303,6 +357,30 @@ function inferProductQuery(message: string) {
     return "teclado";
   }
   return null;
+}
+
+function inferProductQueries(message: string) {
+  const normalized = normalizeText(message);
+  const products = [
+    /\bmonitores?\b/.test(normalized) ? "monitor" : null,
+    /\bnotebooks?\b/.test(normalized) ? "notebook" : null,
+    /\bteclados?\b/.test(normalized) ? "teclado" : null
+  ].filter((product): product is string => Boolean(product));
+
+  if (!/\b(compare|comparar|comparativo|versus|vs\.?|contra|entre)\b/.test(normalized) && products.length < 2) {
+    return [];
+  }
+  return products;
+}
+
+function normalizeProductQueries(value: unknown) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const products = value
+    .map((product) => typeof product === "string" ? cleanProductQuery(product) : "")
+    .filter(Boolean);
+  return products.length ? Array.from(new Set(products)) : null;
 }
 
 function inferCustomerQuery(message: string) {

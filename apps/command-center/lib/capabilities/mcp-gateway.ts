@@ -285,6 +285,7 @@ export class McpCapabilityGateway implements CapabilityGateway {
   async querySalesMetrics(input: {
     metric: "units_sold" | "revenue" | "order_count";
     productQuery?: string | null;
+    productQueries?: string[] | null;
     customerQuery?: string | null;
     dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
     groupBy?: "product" | "customer" | "day" | null;

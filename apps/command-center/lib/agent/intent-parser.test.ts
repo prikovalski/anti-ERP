@@ -65,3 +65,34 @@ test("parseIntentLocally parses analytics questions", () => {
   assert.equal(revenue.analytics?.metric, "revenue");
   assert.equal(revenue.analytics?.dateRange, "today");
 });
+
+test("parseIntentLocally parses composite analytics by customer", () => {
+  const intent = parseIntentLocally("Quais clientes compraram notebooks hoje e qual foi o faturamento por cliente?");
+
+  assert.equal(intent.intent, "analytics_query");
+  assert.equal(intent.productQuery, "notebook");
+  assert.equal(intent.analytics?.metric, "revenue");
+  assert.equal(intent.analytics?.groupBy, "customer");
+  assert.equal(intent.analytics?.dateRange, "today");
+});
+
+test("parseIntentLocally parses product ranking", () => {
+  const intent = parseIntentLocally("Quais produtos mais venderam hoje?");
+
+  assert.equal(intent.intent, "analytics_query");
+  assert.equal(intent.productQuery, null);
+  assert.equal(intent.analytics?.metric, "units_sold");
+  assert.equal(intent.analytics?.groupBy, "product");
+  assert.equal(intent.analytics?.dateRange, "today");
+});
+
+test("parseIntentLocally parses product comparison", () => {
+  const intent = parseIntentLocally("Compare o faturamento de notebooks e monitores hoje");
+
+  assert.equal(intent.intent, "analytics_query");
+  assert.equal(intent.productQuery, null);
+  assert.equal(intent.analytics?.metric, "revenue");
+  assert.equal(intent.analytics?.groupBy, "product");
+  assert.equal(intent.analytics?.dateRange, "today");
+  assert.deepEqual(intent.analytics?.productQueries, ["monitor", "notebook"]);
+});
