@@ -172,7 +172,7 @@ async function callTool<T>(name: string, args: Record<string, unknown>, schema: 
     if (!text) {
       throw new Error(`MCP tool ${name} did not return text content.`);
     }
-    const output = schema.parse(JSON.parse(text));
+    const output = schema.parse(parseToolJson(name, text));
     await recordMcpCall({
       role,
       tool: name,
@@ -192,6 +192,14 @@ async function callTool<T>(name: string, args: Record<string, unknown>, schema: 
       error
     });
     throw error;
+  }
+}
+
+function parseToolJson(name: string, text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(text || `MCP tool ${name} returned invalid JSON.`);
   }
 }
 

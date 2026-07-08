@@ -1,6 +1,6 @@
 import { AgentConfirmRequestSchema, AgentResponseSchema } from "@anti-erp/shared";
 import { NextResponse } from "next/server";
-import { confirmSalesOrder } from "@/lib/agent/demo-agent";
+import { confirmSalesOrder } from "@/lib/agent/sales-order-confirmation";
 import { getCapabilityGateway } from "@/lib/capabilities";
 import { recordAgentStep, withMcpTrace } from "@/lib/observability/mcp-trace";
 
