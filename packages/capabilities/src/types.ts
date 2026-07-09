@@ -28,6 +28,7 @@ export interface CapabilityGateway {
     available: number;
     valid: boolean;
   }>;
+  listLowStockProducts(input?: { threshold?: number }): Promise<Product[]>;
   prepareSalesOrder(input: {
     customerId: string;
     lines: Array<{ productId: string; quantity: number }>;

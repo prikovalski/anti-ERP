@@ -47,5 +47,13 @@ server.tool(
   async (input) => json(await gateway.validateStock(input))
 );
 
+server.tool(
+  "list_low_stock_products",
+  {
+    threshold: z.number().int().nonnegative().optional()
+  },
+  async (input) => json(await gateway.listLowStockProducts(input))
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);

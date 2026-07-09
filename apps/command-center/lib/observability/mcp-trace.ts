@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 
 type McpTraceStatus = "success" | "error";
 
@@ -26,16 +26,6 @@ const traceStorage = new AsyncLocalStorage<McpTraceContext>();
 const globalForPrisma = globalThis as unknown as {
   mcpTracePrisma?: PrismaClient;
 };
-
-const prisma =
-  globalForPrisma.mcpTracePrisma ??
-  new PrismaClient({
-    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"]
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.mcpTracePrisma = prisma;
-}
 
 function createId(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -69,13 +59,16 @@ export async function withMcpTrace<T>(
     entries: [],
     rootRun: null
   };
-  context.rootRun = await createLangSmithRootRun({
-    name: config.name,
-    requestId: context.requestId,
-    inputs: config.inputs ?? {},
-    metadata: config.metadata ?? {},
-    tags: config.tags ?? []
-  });
+  context.rootRun = await withTimeout(
+    createLangSmithRootRun({
+      name: config.name,
+      requestId: context.requestId,
+      inputs: config.inputs ?? {},
+      metadata: config.metadata ?? {},
+      tags: config.tags ?? []
+    }),
+    2500
+  );
 
   const result = await traceStorage.run(context, async () => {
     await withTimeout(context.rootRun?.postRun() ?? Promise.resolve(), 2500);
@@ -258,7 +251,7 @@ async function persistMcpTrace(entry: McpTraceEntry) {
     return;
   }
 
-  const client = prisma as PrismaClient & {
+  const client = await getTracePrisma() as PrismaClient & {
     mcpCallLog?: {
       create(input: {
         data: {
@@ -291,6 +284,23 @@ async function persistMcpTrace(entry: McpTraceEntry) {
       error: entry.error ?? undefined
     }
   });
+}
+
+async function getTracePrisma() {
+  if (globalForPrisma.mcpTracePrisma) {
+    return globalForPrisma.mcpTracePrisma;
+  }
+
+  const { PrismaClient } = await import("@prisma/client");
+  const client = new PrismaClient({
+    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"]
+  });
+
+  if (process.env.NODE_ENV !== "production") {
+    globalForPrisma.mcpTracePrisma = client;
+  }
+
+  return client;
 }
 
 async function createLangSmithRootRun(input: {

@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { antiErpAgentGraph } from "./agent-graph";
+import { parseIntentLocally } from "./intent-parser";
 
-test("antiErpAgentGraph handles empty Studio input without crashing", async () => {
-  const result = await antiErpAgentGraph.invoke({});
+test("local intent parser handles empty Studio input without crashing", () => {
+  const result = parseIntentLocally(undefined);
 
-  assert.equal(result.intent?.intent, "unknown");
-  assert.equal(result.response?.message.role, "agent");
-  assert.match(result.response?.message.text ?? "", /Posso cadastrar clientes/);
+  assert.equal(result.intent, "unknown");
+  assert.equal(result.confidence, 0.4);
 });

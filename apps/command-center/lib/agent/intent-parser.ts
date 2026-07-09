@@ -131,6 +131,7 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
   const asksTraditionalFlow = /\b(tradicional|erp classico|erp tradicional|compar)/.test(normalized);
   const asksList = /\b(liste|listar|recentes|hoje|criados)\b/.test(normalized);
   const asksAnalytics = /\b(quantos|quanto|qual|quais|ranking|vendemos|vendidos|vendeu|venderam|saindo|saida|saiu|comprou|compraram|faturamento|receita)\b/.test(normalized);
+  const asksInventoryDiagnostic = /\bestoque\s+baixo\b|\bbaixo\s+estoque\b|\breposi[cç]ao\b|\brepor\b|\bacabando\b/.test(normalized);
   const analyticsMetric = inferAnalyticsMetric(normalized);
   const analyticsGroupBy = inferAnalyticsGroupBy(normalized);
   const analyticsProductQueries = inferProductQueries(normalized);
@@ -195,6 +196,20 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
       wantsInvoice: orderCommand.wantsInvoice,
       analytics: null,
       confidence: 0.9
+    };
+  }
+
+  if (asksInventoryDiagnostic) {
+    return {
+      intent: "inventory_diagnostic",
+      customerQuery: null,
+      productQuery: null,
+      catalogName: null,
+      productUpdate: null,
+      quantity: null,
+      wantsInvoice: false,
+      analytics: null,
+      confidence: 0.88
     };
   }
 

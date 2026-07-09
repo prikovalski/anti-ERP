@@ -153,6 +153,13 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     };
   }
 
+  async listLowStockProducts(input: { threshold?: number } = {}) {
+    const threshold = input.threshold ?? 10;
+    return this.products
+      .filter((product) => product.availableStock <= threshold)
+      .sort((a, b) => a.availableStock - b.availableStock || a.name.localeCompare(b.name));
+  }
+
   async prepareSalesOrder(input: {
     customerId: string;
     lines: Array<{ productId: string; quantity: number }>;

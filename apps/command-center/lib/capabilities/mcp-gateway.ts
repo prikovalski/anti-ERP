@@ -9,6 +9,7 @@ import {
 } from "@anti-erp/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import path from "node:path";
 import { z } from "zod";
 import { recordMcpCall } from "../observability/mcp-trace";
 import type { CapabilityGateway } from "./types";
@@ -28,7 +29,8 @@ const productTools = new Set([
   "search_product",
   "create_product",
   "update_product",
-  "validate_stock"
+  "validate_stock",
+  "list_low_stock_products"
 ]);
 const supplierTools = new Set(["create_supplier"]);
 const salesOrderTools = new Set([
@@ -74,68 +76,76 @@ async function createClient(role: McpServerRole) {
 
 function getServerCommand(role: McpServerRole) {
   if (role === "customers") {
-    return process.env.MCP_CUSTOMERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+    return process.env.MCP_CUSTOMERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? process.execPath;
   }
   if (role === "products") {
-    return process.env.MCP_PRODUCTS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+    return process.env.MCP_PRODUCTS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? process.execPath;
   }
   if (role === "suppliers") {
-    return process.env.MCP_SUPPLIERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+    return process.env.MCP_SUPPLIERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? process.execPath;
   }
   if (role === "salesOrders") {
-    return process.env.MCP_SALES_ORDERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+    return process.env.MCP_SALES_ORDERS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? process.execPath;
   }
   if (role === "invoices") {
-    return process.env.MCP_INVOICES_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+    return process.env.MCP_INVOICES_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? process.execPath;
   }
   if (role === "analytics") {
-    return process.env.MCP_ANALYTICS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+    return process.env.MCP_ANALYTICS_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? process.execPath;
   }
-  return process.env.MCP_CORE_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? "pnpm";
+  return process.env.MCP_CORE_COMMAND ?? process.env.MCP_SERVER_COMMAND ?? process.execPath;
 }
 
 function getServerArgs(role: McpServerRole) {
   if (role === "customers") {
-    return process.env.MCP_CUSTOMERS_ARGS ?? "--filter @anti-erp/mcp-customers dev";
+    return process.env.MCP_CUSTOMERS_ARGS ?? "--import tsx src/server.ts";
   }
   if (role === "products") {
-    return process.env.MCP_PRODUCTS_ARGS ?? "--filter @anti-erp/mcp-products dev";
+    return process.env.MCP_PRODUCTS_ARGS ?? "--import tsx src/server.ts";
   }
   if (role === "suppliers") {
-    return process.env.MCP_SUPPLIERS_ARGS ?? "--filter @anti-erp/mcp-suppliers dev";
+    return process.env.MCP_SUPPLIERS_ARGS ?? "--import tsx src/server.ts";
   }
   if (role === "salesOrders") {
-    return process.env.MCP_SALES_ORDERS_ARGS ?? "--filter @anti-erp/mcp-sales-orders dev";
+    return process.env.MCP_SALES_ORDERS_ARGS ?? "--import tsx src/server.ts";
   }
   if (role === "invoices") {
-    return process.env.MCP_INVOICES_ARGS ?? "--filter @anti-erp/mcp-invoices dev";
+    return process.env.MCP_INVOICES_ARGS ?? "--import tsx src/server.ts";
   }
   if (role === "analytics") {
-    return process.env.MCP_ANALYTICS_ARGS ?? "--filter @anti-erp/mcp-analytics dev";
+    return process.env.MCP_ANALYTICS_ARGS ?? "--import tsx src/server.ts";
   }
-  return process.env.MCP_CORE_ARGS ?? process.env.MCP_SERVER_ARGS ?? "--filter @anti-erp/mcp-server dev";
+  return process.env.MCP_CORE_ARGS ?? process.env.MCP_SERVER_ARGS ?? "--import tsx src/server.ts";
 }
 
 function getServerCwd(role: McpServerRole) {
   if (role === "customers") {
-    return process.env.MCP_CUSTOMERS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+    return process.env.MCP_CUSTOMERS_CWD ?? process.env.MCP_SERVER_CWD ?? getDefaultServerCwd("mcp-customers");
   }
   if (role === "products") {
-    return process.env.MCP_PRODUCTS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+    return process.env.MCP_PRODUCTS_CWD ?? process.env.MCP_SERVER_CWD ?? getDefaultServerCwd("mcp-products");
   }
   if (role === "suppliers") {
-    return process.env.MCP_SUPPLIERS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+    return process.env.MCP_SUPPLIERS_CWD ?? process.env.MCP_SERVER_CWD ?? getDefaultServerCwd("mcp-suppliers");
   }
   if (role === "salesOrders") {
-    return process.env.MCP_SALES_ORDERS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+    return process.env.MCP_SALES_ORDERS_CWD ?? process.env.MCP_SERVER_CWD ?? getDefaultServerCwd("mcp-sales-orders");
   }
   if (role === "invoices") {
-    return process.env.MCP_INVOICES_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+    return process.env.MCP_INVOICES_CWD ?? process.env.MCP_SERVER_CWD ?? getDefaultServerCwd("mcp-invoices");
   }
   if (role === "analytics") {
-    return process.env.MCP_ANALYTICS_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+    return process.env.MCP_ANALYTICS_CWD ?? process.env.MCP_SERVER_CWD ?? getDefaultServerCwd("mcp-analytics");
   }
-  return process.env.MCP_CORE_CWD ?? process.env.MCP_SERVER_CWD ?? process.cwd();
+  return process.env.MCP_CORE_CWD ?? process.env.MCP_SERVER_CWD ?? getDefaultServerCwd("mcp-server");
+}
+
+function getDefaultServerCwd(appName: string) {
+  const cwd = process.cwd();
+  if (path.basename(cwd) === "command-center") {
+    return path.resolve(cwd, "..", appName);
+  }
+  return path.resolve(cwd, "apps", appName);
 }
 
 function getRoleForTool(name: string): McpServerRole {
@@ -243,6 +253,10 @@ export class McpCapabilityGateway implements CapabilityGateway {
         valid: z.boolean()
       })
     );
+  }
+
+  async listLowStockProducts(input: { threshold?: number } = {}) {
+    return callTool("list_low_stock_products", input, z.array(ProductSchema));
   }
 
   async prepareSalesOrder(input: {

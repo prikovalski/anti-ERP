@@ -96,6 +96,10 @@ export const ValidateStockInputSchema = z.object({
   quantity: z.number().int().positive()
 });
 
+export const ListLowStockProductsInputSchema = z.object({
+  threshold: z.number().int().nonnegative().default(10)
+});
+
 export const PrepareSalesOrderInputSchema = z.object({
   customerId: z.string(),
   lines: z.array(
@@ -257,6 +261,7 @@ export type CreateCustomerInput = z.infer<typeof CreateCustomerInputSchema>;
 export type CreateProductInput = z.infer<typeof CreateProductInputSchema>;
 export type CreateSupplierInput = z.infer<typeof CreateSupplierInputSchema>;
 export type UpdateProductInput = z.infer<typeof UpdateProductInputSchema>;
+export type ListLowStockProductsInput = z.infer<typeof ListLowStockProductsInputSchema>;
 export type SalesOrderLine = z.infer<typeof SalesOrderLineSchema>;
 export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;

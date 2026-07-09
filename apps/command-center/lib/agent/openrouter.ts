@@ -12,6 +12,7 @@ const IntentSchema = z.object({
     "list_orders",
     "traditional_flow",
     "analytics_query",
+    "inventory_diagnostic",
     "unknown"
   ]),
   customerQuery: z.string().nullable(),
@@ -65,7 +66,7 @@ export async function inferIntentWithOpenRouter(message: string): Promise<AgentI
         {
           role: "system",
           content:
-            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|create_order_with_invoice|list_orders|traditional_flow|analytics_query|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For stock updates, set productUpdate.availableStock. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
+            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|create_order_with_invoice|list_orders|traditional_flow|analytics_query|inventory_diagnostic|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For stock updates, set productUpdate.availableStock. For 'quais produtos estão com estoque baixo', use intent=inventory_diagnostic. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
         },
         {
           role: "user",

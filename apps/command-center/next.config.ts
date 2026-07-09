@@ -6,6 +6,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
+  serverExternalPackages: [
+    "@langchain/core",
+    "@langchain/langgraph",
+    "@modelcontextprotocol/sdk",
+    "langsmith"
+  ],
   transpilePackages: ["@anti-erp/shared"]
 };
 

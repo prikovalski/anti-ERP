@@ -81,6 +81,7 @@ function createGatewayStub(calls: string[]): CapabilityGateway {
     searchCustomer: unsupported,
     searchProduct: unsupported,
     validateStock: unsupported,
+    listLowStockProducts: unsupported,
     prepareSalesOrder: unsupported,
     getSalesOrder: unsupported,
     listRecentOrders: unsupported,

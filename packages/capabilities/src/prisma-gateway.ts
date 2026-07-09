@@ -391,6 +391,27 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     };
   }
 
+  async listLowStockProducts(input: { threshold?: number } = {}) {
+    await ensureSeeded();
+    const threshold = input.threshold ?? 10;
+    const products = (await prisma.product.findMany({
+      where: {
+        availableStock: {
+          lte: threshold
+        }
+      },
+      orderBy: [
+        { availableStock: "asc" },
+        { name: "asc" }
+      ]
+    })) as DbProduct[];
+    await audit("list_low_stock_products", `Listed products with stock at or below ${threshold}`, {
+      threshold,
+      count: products.length
+    });
+    return products.map(mapProduct);
+  }
+
   async prepareSalesOrder(input: {
     customerId: string;
     lines: Array<{ productId: string; quantity: number }>;

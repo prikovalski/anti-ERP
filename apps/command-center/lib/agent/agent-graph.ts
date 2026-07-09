@@ -31,6 +31,7 @@ type AgentRoute =
   | "invoice"
   | "orders_list"
   | "traditional_flow"
+  | "inventory_diagnostic"
   | "unknown";
 
 type CatalogKind = "customer" | "product" | "supplier";
@@ -97,9 +98,12 @@ const AgentGraphState = Annotation.Root({
   existingOrder: Annotation<SalesOrder | null>,
   invoice: Annotation<ConceptInvoice | null>,
   recentOrders: Annotation<SalesOrder[]>,
+  lowStockProducts: Annotation<Product[]>,
   traditionalFlow: Annotation<{ traditional: string[]; antiErp: string[] } | null>,
   response: Annotation<AgentResponse | null>
 });
+
+type AgentGraphStateValue = Record<string, any>;
 
 export const antiErpAgentGraph = new StateGraph(AgentGraphState)
   .addNode("parse_local_intent", parseLocalIntentNode)
@@ -126,14 +130,26 @@ export const antiErpAgentGraph = new StateGraph(AgentGraphState)
   .addNode("compose_invoice_response", composeInvoiceResponseNode)
   .addNode("list_recent_orders", listRecentOrdersNode)
   .addNode("compose_orders_list_response", composeOrdersListResponseNode)
+  .addNode("list_low_stock_products", listLowStockProductsNode)
+  .addNode("compose_inventory_diagnostic_response", composeInventoryDiagnosticResponseNode)
   .addNode("load_traditional_flow", loadTraditionalFlowNode)
   .addNode("compose_traditional_flow_response", composeTraditionalFlowResponseNode)
   .addNode("compose_unknown_response", composeUnknownResponseNode)
   .addEdge(START, "parse_local_intent")
   .addEdge("parse_local_intent", "infer_openrouter_intent")
-  .addEdge("infer_openrouter_intent", "load_capability_gateway")
-  .addEdge("load_capability_gateway", "route_intent")
+  .addEdge("infer_openrouter_intent", "route_intent")
   .addConditionalEdges("route_intent", pickIntentRoute, {
+    sales_order: "load_capability_gateway",
+    analytics: "load_capability_gateway",
+    catalog: "load_capability_gateway",
+    product_update: "load_capability_gateway",
+    invoice: "load_capability_gateway",
+    orders_list: "load_capability_gateway",
+    traditional_flow: "load_capability_gateway",
+    inventory_diagnostic: "load_capability_gateway",
+    unknown: "compose_unknown_response"
+  })
+  .addConditionalEdges("load_capability_gateway", pickIntentRoute, {
     sales_order: "resolve_customer",
     analytics: "build_analytics_query",
     catalog: "validate_catalog_command",
@@ -141,6 +157,7 @@ export const antiErpAgentGraph = new StateGraph(AgentGraphState)
     invoice: "load_order_for_invoice",
     orders_list: "list_recent_orders",
     traditional_flow: "load_traditional_flow",
+    inventory_diagnostic: "list_low_stock_products",
     unknown: "compose_unknown_response"
   })
   .addEdge("resolve_customer", "resolve_products")
@@ -181,6 +198,8 @@ export const antiErpAgentGraph = new StateGraph(AgentGraphState)
   .addEdge("compose_invoice_response", END)
   .addEdge("list_recent_orders", "compose_orders_list_response")
   .addEdge("compose_orders_list_response", END)
+  .addEdge("list_low_stock_products", "compose_inventory_diagnostic_response")
+  .addEdge("compose_inventory_diagnostic_response", END)
   .addEdge("load_traditional_flow", "compose_traditional_flow_response")
   .addEdge("compose_traditional_flow_response", END)
   .addEdge("compose_unknown_response", END)
@@ -210,6 +229,7 @@ export async function runAgentGraph(input: AgentGraphInput) {
     existingOrder: null,
     invoice: null,
     recentOrders: [],
+    lowStockProducts: [],
     traditionalFlow: null,
     response: null
   });
@@ -224,7 +244,7 @@ function normalizeInputMessage(message: unknown) {
   return typeof message === "string" ? message : "";
 }
 
-async function parseLocalIntentNode(state: typeof AgentGraphState.State) {
+async function parseLocalIntentNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const message = normalizeInputMessage(state.message);
   const intent = parseIntentLocally(message);
@@ -244,9 +264,14 @@ async function parseLocalIntentNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function inferOpenRouterIntentNode(state: typeof AgentGraphState.State) {
+async function inferOpenRouterIntentNode(state: AgentGraphStateValue) {
   const message = normalizeInputMessage(state.message);
   if (!message || !process.env.OPENROUTER_API_KEY) {
+    return {
+      mode: "langgraph" satisfies AgentResponse["mode"]
+    };
+  }
+  if (state.intent && state.intent.intent !== "unknown" && state.intent.confidence >= 0.8) {
     return {
       mode: "langgraph" satisfies AgentResponse["mode"]
     };
@@ -302,7 +327,7 @@ async function loadCapabilityGatewayNode() {
   };
 }
 
-async function routeIntentNode(state: typeof AgentGraphState.State) {
+async function routeIntentNode(state: AgentGraphStateValue) {
   if (!state.intent) {
     throw new Error("Agent graph is missing intent.");
   }
@@ -321,6 +346,8 @@ async function routeIntentNode(state: typeof AgentGraphState.State) {
               ? "orders_list"
               : state.intent.intent === "traditional_flow"
                 ? "traditional_flow"
+                : state.intent.intent === "inventory_diagnostic"
+                  ? "inventory_diagnostic"
                 : "unknown";
   await recordAgentStep({
     name: "route_intent",
@@ -337,11 +364,11 @@ async function routeIntentNode(state: typeof AgentGraphState.State) {
   };
 }
 
-function pickIntentRoute(state: typeof AgentGraphState.State) {
+function pickIntentRoute(state: AgentGraphStateValue) {
   return state.route ?? "unknown";
 }
 
-async function resolveCustomerNode(state: typeof AgentGraphState.State) {
+async function resolveCustomerNode(state: AgentGraphStateValue) {
   if (!state.intent || !state.gateway) {
     throw new Error("Agent graph is missing intent or capability gateway.");
   }
@@ -367,7 +394,7 @@ async function resolveCustomerNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function resolveProductsNode(state: typeof AgentGraphState.State) {
+async function resolveProductsNode(state: AgentGraphStateValue) {
   if (!state.intent || !state.gateway) {
     throw new Error("Agent graph is missing intent or capability gateway.");
   }
@@ -400,22 +427,22 @@ async function resolveProductsNode(state: typeof AgentGraphState.State) {
   };
 }
 
-function pickSalesOrderReadiness(state: typeof AgentGraphState.State) {
-  const missingProducts = state.resolvedLines.some((line) => !line.product);
+function pickSalesOrderReadiness(state: AgentGraphStateValue) {
+  const missingProducts = state.resolvedLines.some((line: ResolvedOrderLine) => !line.product);
   if (!state.customer || state.requestedLines.length === 0 || missingProducts) {
     return "needs_context";
   }
   return "ready";
 }
 
-async function validateStockNode(state: typeof AgentGraphState.State) {
+async function validateStockNode(state: AgentGraphStateValue) {
   if (!state.gateway) {
     throw new Error("Agent graph is missing capability gateway.");
   }
 
   const startedAt = performance.now();
   const stockResults = await Promise.all(
-    state.resolvedLines.map((line) =>
+    state.resolvedLines.map((line: ResolvedOrderLine) =>
       state.gateway!.validateStock({
         productId: line.product!.id,
         quantity: line.requested.quantity
@@ -428,7 +455,7 @@ async function validateStockNode(state: typeof AgentGraphState.State) {
     status: "success",
     durationMs: performance.now() - startedAt,
     outputs: {
-      lines: stockResults.map((stock) => ({
+      lines: stockResults.map((stock: StockResult) => ({
         productId: stock.productId,
         requested: stock.requested,
         available: stock.available,
@@ -442,7 +469,7 @@ async function validateStockNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function prepareSalesOrderNode(state: typeof AgentGraphState.State) {
+async function prepareSalesOrderNode(state: AgentGraphStateValue) {
   if (!state.gateway || !state.customer) {
     throw new Error("Agent graph is missing capability gateway or customer.");
   }
@@ -450,7 +477,7 @@ async function prepareSalesOrderNode(state: typeof AgentGraphState.State) {
   const startedAt = performance.now();
   const preview = await state.gateway.prepareSalesOrder({
     customerId: state.customer.id,
-    lines: state.resolvedLines.map((line) => ({
+    lines: state.resolvedLines.map((line: ResolvedOrderLine) => ({
       productId: line.product!.id,
       quantity: line.requested.quantity
     }))
@@ -463,7 +490,7 @@ async function prepareSalesOrderNode(state: typeof AgentGraphState.State) {
     outputs: {
       customer: preview.customer.name,
       subtotal: preview.subtotal,
-      lines: preview.lines.map((line) => ({
+      lines: preview.lines.map((line: SalesOrderPreview["lines"][number]) => ({
         product: line.name,
         quantity: line.quantity,
         total: line.total
@@ -476,7 +503,7 @@ async function prepareSalesOrderNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function composeSalesOrderResponseNode(state: typeof AgentGraphState.State) {
+async function composeSalesOrderResponseNode(state: AgentGraphStateValue) {
   if (!state.intent) {
     throw new Error("Agent graph is missing intent.");
   }
@@ -501,7 +528,7 @@ async function composeSalesOrderResponseNode(state: typeof AgentGraphState.State
   };
 }
 
-async function buildAnalyticsQueryNode(state: typeof AgentGraphState.State) {
+async function buildAnalyticsQueryNode(state: AgentGraphStateValue) {
   if (!state.intent) {
     throw new Error("Agent graph is missing intent.");
   }
@@ -538,11 +565,11 @@ async function buildAnalyticsQueryNode(state: typeof AgentGraphState.State) {
   };
 }
 
-function pickAnalyticsReadiness(state: typeof AgentGraphState.State) {
+function pickAnalyticsReadiness(state: AgentGraphStateValue) {
   return state.analyticsQuery ? "ready" : "needs_context";
 }
 
-async function runAnalyticsQueryNode(state: typeof AgentGraphState.State) {
+async function runAnalyticsQueryNode(state: AgentGraphStateValue) {
   if (!state.gateway || !state.analyticsQuery) {
     throw new Error("Agent graph is missing capability gateway or analytics query.");
   }
@@ -566,7 +593,7 @@ async function runAnalyticsQueryNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function composeAnalyticsResponseNode(state: typeof AgentGraphState.State) {
+async function composeAnalyticsResponseNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const response = state.analyticsResult && state.analyticsQuery
     ? createAnalyticsResponse(state)
@@ -587,7 +614,7 @@ async function composeAnalyticsResponseNode(state: typeof AgentGraphState.State)
   };
 }
 
-async function validateCatalogCommandNode(state: typeof AgentGraphState.State) {
+async function validateCatalogCommandNode(state: AgentGraphStateValue) {
   if (!state.intent) {
     throw new Error("Agent graph is missing intent.");
   }
@@ -616,11 +643,11 @@ async function validateCatalogCommandNode(state: typeof AgentGraphState.State) {
   };
 }
 
-function pickCatalogReadiness(state: typeof AgentGraphState.State) {
+function pickCatalogReadiness(state: AgentGraphStateValue) {
   return state.catalogCommand ? "ready" : "needs_context";
 }
 
-async function createCatalogRecordNode(state: typeof AgentGraphState.State) {
+async function createCatalogRecordNode(state: AgentGraphStateValue) {
   if (!state.gateway || !state.catalogCommand) {
     throw new Error("Agent graph is missing capability gateway or catalog command.");
   }
@@ -663,7 +690,7 @@ async function createCatalogRecordNode(state: typeof AgentGraphState.State) {
   }
 }
 
-async function composeCatalogResponseNode(state: typeof AgentGraphState.State) {
+async function composeCatalogResponseNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const response = createCatalogResponse(state);
 
@@ -682,7 +709,7 @@ async function composeCatalogResponseNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function validateProductUpdateCommandNode(state: typeof AgentGraphState.State) {
+async function validateProductUpdateCommandNode(state: AgentGraphStateValue) {
   if (!state.intent) {
     throw new Error("Agent graph is missing intent.");
   }
@@ -712,11 +739,11 @@ async function validateProductUpdateCommandNode(state: typeof AgentGraphState.St
   };
 }
 
-function pickProductUpdateCommandReadiness(state: typeof AgentGraphState.State) {
+function pickProductUpdateCommandReadiness(state: AgentGraphStateValue) {
   return state.productUpdateCommand ? "ready" : "needs_context";
 }
 
-async function resolveProductToUpdateNode(state: typeof AgentGraphState.State) {
+async function resolveProductToUpdateNode(state: AgentGraphStateValue) {
   if (!state.gateway || !state.productUpdateCommand) {
     throw new Error("Agent graph is missing capability gateway or product update command.");
   }
@@ -741,11 +768,11 @@ async function resolveProductToUpdateNode(state: typeof AgentGraphState.State) {
   };
 }
 
-function pickProductUpdateProductReadiness(state: typeof AgentGraphState.State) {
+function pickProductUpdateProductReadiness(state: AgentGraphStateValue) {
   return state.productToUpdate ? "ready" : "not_found";
 }
 
-async function applyProductUpdateNode(state: typeof AgentGraphState.State) {
+async function applyProductUpdateNode(state: AgentGraphStateValue) {
   if (!state.gateway || !state.productToUpdate || !state.productUpdateCommand) {
     throw new Error("Agent graph is missing capability gateway, product, or update command.");
   }
@@ -774,7 +801,7 @@ async function applyProductUpdateNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function composeProductUpdateResponseNode(state: typeof AgentGraphState.State) {
+async function composeProductUpdateResponseNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const response = createProductUpdateResponse(state);
 
@@ -793,7 +820,7 @@ async function composeProductUpdateResponseNode(state: typeof AgentGraphState.St
   };
 }
 
-async function loadOrderForInvoiceNode(state: typeof AgentGraphState.State) {
+async function loadOrderForInvoiceNode(state: AgentGraphStateValue) {
   if (!state.gateway) {
     throw new Error("Agent graph is missing capability gateway.");
   }
@@ -818,11 +845,11 @@ async function loadOrderForInvoiceNode(state: typeof AgentGraphState.State) {
   };
 }
 
-function pickInvoiceOrderReadiness(state: typeof AgentGraphState.State) {
+function pickInvoiceOrderReadiness(state: AgentGraphStateValue) {
   return state.existingOrder ? "ready" : "needs_context";
 }
 
-async function createConceptInvoiceNode(state: typeof AgentGraphState.State) {
+async function createConceptInvoiceNode(state: AgentGraphStateValue) {
   if (!state.gateway || !state.existingOrder) {
     throw new Error("Agent graph is missing capability gateway or existing order.");
   }
@@ -848,7 +875,7 @@ async function createConceptInvoiceNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function composeInvoiceResponseNode(state: typeof AgentGraphState.State) {
+async function composeInvoiceResponseNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const response = createInvoiceResponse(state);
 
@@ -867,7 +894,7 @@ async function composeInvoiceResponseNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function listRecentOrdersNode(state: typeof AgentGraphState.State) {
+async function listRecentOrdersNode(state: AgentGraphStateValue) {
   if (!state.gateway) {
     throw new Error("Agent graph is missing capability gateway.");
   }
@@ -889,7 +916,7 @@ async function listRecentOrdersNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function composeOrdersListResponseNode(state: typeof AgentGraphState.State) {
+async function composeOrdersListResponseNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const response = createOrdersListResponse(state);
 
@@ -908,7 +935,49 @@ async function composeOrdersListResponseNode(state: typeof AgentGraphState.State
   };
 }
 
-async function loadTraditionalFlowNode(state: typeof AgentGraphState.State) {
+async function listLowStockProductsNode(state: AgentGraphStateValue) {
+  if (!state.gateway) {
+    throw new Error("Agent graph is missing capability gateway.");
+  }
+
+  const startedAt = performance.now();
+  const lowStockProducts = await state.gateway.listLowStockProducts({ threshold: 10 });
+
+  await recordAgentStep({
+    name: "list_low_stock_products",
+    status: "success",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      products: lowStockProducts.length,
+      threshold: 10
+    }
+  });
+
+  return {
+    lowStockProducts
+  };
+}
+
+async function composeInventoryDiagnosticResponseNode(state: AgentGraphStateValue) {
+  const startedAt = performance.now();
+  const response = createInventoryDiagnosticResponse(state);
+
+  await recordAgentStep({
+    name: "compose_inventory_diagnostic_response",
+    status: "success",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      products: state.lowStockProducts.length,
+      auditEvents: response.auditEvents.length
+    }
+  });
+
+  return {
+    response
+  };
+}
+
+async function loadTraditionalFlowNode(state: AgentGraphStateValue) {
   if (!state.gateway) {
     throw new Error("Agent graph is missing capability gateway.");
   }
@@ -931,7 +1000,7 @@ async function loadTraditionalFlowNode(state: typeof AgentGraphState.State) {
   };
 }
 
-async function composeTraditionalFlowResponseNode(state: typeof AgentGraphState.State) {
+async function composeTraditionalFlowResponseNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const response = createTraditionalFlowResponse(state);
 
@@ -950,7 +1019,7 @@ async function composeTraditionalFlowResponseNode(state: typeof AgentGraphState.
   };
 }
 
-async function composeUnknownResponseNode(state: typeof AgentGraphState.State) {
+async function composeUnknownResponseNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const response = createUnknownResponse(state);
 
@@ -1001,11 +1070,11 @@ function getRequestedOrderLines(intent: AgentIntent): RequestedOrderLine[] {
   return [];
 }
 
-function createPreparedOrderResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createPreparedOrderResponse(state: AgentGraphStateValue): AgentResponse {
   const preview = state.preview!;
   const customer = state.customer!;
   const itemSummary = preview.lines
-    .map((line) => `${line.quantity}x ${line.name}`)
+    .map((line: SalesOrderPreview["lines"][number]) => `${line.quantity}x ${line.name}`)
     .join(", ");
 
   return {
@@ -1020,11 +1089,11 @@ function createPreparedOrderResponse(state: typeof AgentGraphState.State): Agent
     },
     auditEvents: [
       audit("search_customer", `Matched customer ${customer.name}.`),
-      audit("search_product", `Matched products: ${preview.lines.map((line) => line.name).join(", ")}.`),
+      audit("search_product", `Matched products: ${preview.lines.map((line: SalesOrderPreview["lines"][number]) => line.name).join(", ")}.`),
       audit(
         "validate_stock",
         `Validated ${state.stockResults.length} line(s): ${state.stockResults
-          .map((stock) => `${stock.requested}/${stock.available}`)
+          .map((stock: StockResult) => `${stock.requested}/${stock.available}`)
           .join(", ")}.`
       ),
       audit("prepare_sales_order", `Prepared preview for ${money(preview.subtotal)}.`)
@@ -1033,14 +1102,14 @@ function createPreparedOrderResponse(state: typeof AgentGraphState.State): Agent
   };
 }
 
-function createOrderClarificationResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createOrderClarificationResponse(state: AgentGraphStateValue): AgentResponse {
   const missingProducts = state.resolvedLines
-    .filter((line) => !line.product)
-    .map((line) => line.requested.productQuery);
+    .filter((line: ResolvedOrderLine) => !line.product)
+    .map((line: ResolvedOrderLine) => line.requested.productQuery);
   const missing = [
     state.customer ? null : "cliente",
     state.requestedLines.length ? null : "produto e quantidade",
-    ...missingProducts.map((product) => `produto ${product}`)
+    ...missingProducts.map((product: string) => `produto ${product}`)
   ].filter(Boolean);
 
   return {
@@ -1065,7 +1134,7 @@ async function createCatalogRecord(gateway: CapabilityGateway, command: CatalogC
   return gateway.createSupplier({ name: command.name });
 }
 
-function createCatalogResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createCatalogResponse(state: AgentGraphStateValue): AgentResponse {
   const command = state.catalogCommand;
   if (!command) {
     const label = getCatalogLabelFromIntent(state.intent);
@@ -1102,7 +1171,7 @@ function createCatalogResponse(state: typeof AgentGraphState.State): AgentRespon
   };
 }
 
-function createProductUpdateResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createProductUpdateResponse(state: AgentGraphStateValue): AgentResponse {
   const command = state.productUpdateCommand;
   if (!command) {
     return {
@@ -1164,7 +1233,7 @@ function createProductUpdateResponse(state: typeof AgentGraphState.State): Agent
   };
 }
 
-function createInvoiceResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createInvoiceResponse(state: AgentGraphStateValue): AgentResponse {
   if (!state.lastOrderId || !state.existingOrder) {
     return {
       mode: state.mode,
@@ -1204,7 +1273,7 @@ function createInvoiceResponse(state: typeof AgentGraphState.State): AgentRespon
   };
 }
 
-function createOrdersListResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createOrdersListResponse(state: AgentGraphStateValue): AgentResponse {
   const orders = state.recentOrders;
   return {
     mode: state.mode,
@@ -1213,7 +1282,7 @@ function createOrdersListResponse(state: typeof AgentGraphState.State): AgentRes
       role: "agent",
       text: orders.length
         ? `Encontrei ${orders.length} pedido(s) recentes: ${orders
-            .map((order) => `${order.id} para ${order.customer.name}`)
+            .map((order: SalesOrder) => `${order.id} para ${order.customer.name}`)
             .join(", ")}.`
         : "Ainda nao ha pedidos confirmados nesta sessao demo."
     },
@@ -1222,7 +1291,25 @@ function createOrdersListResponse(state: typeof AgentGraphState.State): AgentRes
   };
 }
 
-function createTraditionalFlowResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createInventoryDiagnosticResponse(state: AgentGraphStateValue): AgentResponse {
+  const products = state.lowStockProducts;
+  return {
+    mode: state.mode,
+    message: {
+      id: createId("msg"),
+      role: "agent",
+      text: products.length
+        ? `Encontrei ${products.length} produto(s) com estoque baixo: ${products
+            .map((product: Product) => `${product.name} (${product.availableStock} un.)`)
+            .join(", ")}. Sugestao: priorize reposicao dos itens com menor saldo antes de aceitar pedidos maiores.`
+        : "Nao encontrei produtos com estoque baixo considerando o limite de 10 unidades."
+    },
+    auditEvents: [audit("list_low_stock_products", "Diagnosed low stock products.")],
+    lastOrderId: state.lastOrderId ?? null
+  };
+}
+
+function createTraditionalFlowResponse(state: AgentGraphStateValue): AgentResponse {
   return {
     mode: state.mode,
     message: {
@@ -1238,14 +1325,14 @@ function createTraditionalFlowResponse(state: typeof AgentGraphState.State): Age
   };
 }
 
-function createUnknownResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createUnknownResponse(state: AgentGraphStateValue): AgentResponse {
   return {
     mode: state.mode,
     message: {
       id: createId("msg"),
       role: "agent",
       text:
-        "Posso cadastrar clientes, produtos e fornecedores, criar pedidos, gerar nota conceitual para um pedido confirmado, listar pedidos recentes ou comparar com um ERP tradicional."
+        "Posso cadastrar clientes, produtos e fornecedores, criar pedidos, gerar nota conceitual para um pedido confirmado, listar pedidos recentes, diagnosticar estoque baixo ou comparar com um ERP tradicional."
     },
     auditEvents: [audit("unknown_intent", "Agent could not map the message to a supported MCP capability.", "agent")],
     lastOrderId: state.lastOrderId ?? null
@@ -1311,7 +1398,7 @@ function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function createAnalyticsResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createAnalyticsResponse(state: AgentGraphStateValue): AgentResponse {
   const analyticsResult = state.analyticsResult!;
   const analyticsQuery = state.analyticsQuery!;
 
@@ -1336,7 +1423,7 @@ function createAnalyticsResponse(state: typeof AgentGraphState.State): AgentResp
   };
 }
 
-function createAnalyticsClarificationResponse(state: typeof AgentGraphState.State): AgentResponse {
+function createAnalyticsClarificationResponse(state: AgentGraphStateValue): AgentResponse {
   return {
     mode: state.mode,
     message: {
@@ -1399,7 +1486,7 @@ function appendAnalyticsRows(
     .slice(0, 5)
     .map((row) => `${row.label}: ${formatAnalyticsRowMetric(metric, row.value)}`)
     .join("; ");
-  return `${base} ${groupLabel}: ${rowSummary}.`;
+  return `${base} ${groupLabel}: ${rowSummary}. ${formatAnalyticsExplanation(metric, rows)}`;
 }
 
 function formatAnalyticsRowMetric(metric: AnalyticsMetric, value: number) {
@@ -1410,6 +1497,22 @@ function formatAnalyticsRowMetric(metric: AnalyticsMetric, value: number) {
     return `${value} pedido(s)`;
   }
   return `${value} unidade(s)`;
+}
+
+function formatAnalyticsExplanation(metric: AnalyticsMetric, rows: Array<{ label: string; value: number }>) {
+  const leader = rows[0];
+  if (!leader) {
+    return "";
+  }
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  const share = total > 0 ? Math.round((leader.value / total) * 100) : 0;
+  const metricLabel =
+    metric === "revenue"
+      ? "do faturamento analisado"
+      : metric === "order_count"
+        ? "dos pedidos analisados"
+        : "das unidades analisadas";
+  return `${leader.label} lidera com ${formatAnalyticsRowMetric(metric, leader.value)}, representando ${share}% ${metricLabel}.`;
 }
 
 async function searchProductWithFallback(gateway: CapabilityGateway, productQuery: string) {

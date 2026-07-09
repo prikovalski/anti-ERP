@@ -96,3 +96,9 @@ test("parseIntentLocally parses product comparison", () => {
   assert.equal(intent.analytics?.dateRange, "today");
   assert.deepEqual(intent.analytics?.productQueries, ["monitor", "notebook"]);
 });
+
+test("parseIntentLocally parses inventory diagnostics before generic analytics", () => {
+  const intent = parseIntentLocally("Quais produtos estão com estoque baixo?");
+
+  assert.equal(intent.intent, "inventory_diagnostic");
+});
