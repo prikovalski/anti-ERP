@@ -115,6 +115,23 @@ export const CreateSalesOrderInputSchema = z.object({
   confirmedByUser: z.literal(true)
 });
 
+export const AddSalesOrderLineInputSchema = z.object({
+  salesOrderId: z.string(),
+  productId: z.string(),
+  quantity: z.number().int().positive()
+});
+
+export const SetSalesOrderLineQuantityInputSchema = z.object({
+  salesOrderId: z.string(),
+  productId: z.string(),
+  quantity: z.number().int().nonnegative()
+});
+
+export const RemoveSalesOrderLineInputSchema = z.object({
+  salesOrderId: z.string(),
+  productId: z.string()
+});
+
 export const CreateConceptInvoiceInputSchema = z.object({
   salesOrderId: z.string()
 });
@@ -171,14 +188,52 @@ export const AgentMessageSchema = z.object({
   text: z.string()
 });
 
+export const ConversationEntitySchema = z.object({
+  id: z.string().nullable(),
+  name: z.string()
+});
+
+export const ConversationContextSchema = z.object({
+  activeOrderId: z.string().nullable().default(null),
+  activeInvoiceId: z.string().nullable().default(null),
+  activeCustomer: ConversationEntitySchema.nullable().default(null),
+  activeProducts: z.array(ConversationEntitySchema).default([]),
+  lastDocumentType: z.enum(["sales_order_preview", "sales_order", "invoice", "report", "catalog", "plan", "message"]).nullable().default(null),
+  pendingConfirmation: z.enum(["sales_order", "invoice", "none"]).default("none"),
+  lastUserCommand: z.string().nullable().default(null),
+  lastAgentSummary: z.string().nullable().default(null)
+});
+
+export const ExecutionPlanStepSchema = z.object({
+  id: z.string(),
+  action: z.enum([
+    "create_customer",
+    "create_product",
+    "create_supplier",
+    "prepare_sales_order",
+    "create_invoice",
+    "query_report"
+  ]),
+  description: z.string(),
+  status: z.enum(["planned", "executed", "pending_confirmation", "blocked", "skipped"]),
+  detail: z.string().nullable().optional()
+});
+
+export const ExecutionPlanSchema = z.object({
+  summary: z.string(),
+  steps: z.array(ExecutionPlanStepSchema).min(1)
+});
+
 export const AgentRequestSchema = z.object({
   message: z.string().min(1),
-  lastOrderId: z.string().optional()
+  lastOrderId: z.string().optional(),
+  conversationContext: ConversationContextSchema.optional()
 });
 
 export const AgentConfirmRequestSchema = z.object({
   preview: SalesOrderPreviewSchema,
-  createInvoice: z.boolean().default(false)
+  createInvoice: z.boolean().default(false),
+  conversationContext: ConversationContextSchema.optional()
 });
 
 export const AgentResponseSchema = z.object({
@@ -187,6 +242,7 @@ export const AgentResponseSchema = z.object({
   order: SalesOrderSchema.nullable().optional(),
   invoice: ConceptInvoiceSchema.nullable().optional(),
   analyticsResult: AnalyticsResultSchema.nullable().optional(),
+  executionPlan: ExecutionPlanSchema.nullable().optional(),
   auditEvents: z.array(AuditEventSchema),
   mcpTrace: z.array(
     z.object({
@@ -203,7 +259,8 @@ export const AgentResponseSchema = z.object({
     })
   ).optional(),
   mode: z.enum(["langgraph", "openrouter"]),
-  lastOrderId: z.string().nullable().optional()
+  lastOrderId: z.string().nullable().optional(),
+  conversationContext: ConversationContextSchema.optional()
 });
 
 export const demoCustomers: Customer[] = [
@@ -262,6 +319,9 @@ export type CreateProductInput = z.infer<typeof CreateProductInputSchema>;
 export type CreateSupplierInput = z.infer<typeof CreateSupplierInputSchema>;
 export type UpdateProductInput = z.infer<typeof UpdateProductInputSchema>;
 export type ListLowStockProductsInput = z.infer<typeof ListLowStockProductsInputSchema>;
+export type AddSalesOrderLineInput = z.infer<typeof AddSalesOrderLineInputSchema>;
+export type SetSalesOrderLineQuantityInput = z.infer<typeof SetSalesOrderLineQuantityInputSchema>;
+export type RemoveSalesOrderLineInput = z.infer<typeof RemoveSalesOrderLineInputSchema>;
 export type SalesOrderLine = z.infer<typeof SalesOrderLineSchema>;
 export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;
@@ -275,6 +335,10 @@ export type AnalyticsEntity = z.infer<typeof AnalyticsEntitySchema>;
 export type AnalyticsFilter = z.infer<typeof AnalyticsFilterSchema>;
 export type AnalyticsResult = z.infer<typeof AnalyticsResultSchema>;
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
+export type ConversationEntity = z.infer<typeof ConversationEntitySchema>;
+export type ConversationContext = z.infer<typeof ConversationContextSchema>;
+export type ExecutionPlan = z.infer<typeof ExecutionPlanSchema>;
+export type ExecutionPlanStep = z.infer<typeof ExecutionPlanStepSchema>;
 export type AgentRequest = z.infer<typeof AgentRequestSchema>;
 export type AgentConfirmRequest = z.infer<typeof AgentConfirmRequestSchema>;
 export type AgentResponse = z.infer<typeof AgentResponseSchema>;

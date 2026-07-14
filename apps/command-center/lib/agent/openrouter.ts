@@ -8,6 +8,10 @@ const IntentSchema = z.object({
     "create_product",
     "create_supplier",
     "update_product",
+    "add_item_to_order",
+    "set_order_item_quantity",
+    "remove_item_from_order",
+    "planned_workflow",
     "create_order_with_invoice",
     "list_orders",
     "traditional_flow",
@@ -23,11 +27,11 @@ const IntentSchema = z.object({
     unitPrice: z.number().nonnegative().nullable(),
     availableStock: z.number().int().nonnegative().nullable()
   }).nullable().optional(),
-  quantity: z.number().int().positive().nullable(),
+  quantity: z.number().int().nonnegative().nullable(),
   orderLines: z.array(
     z.object({
       productQuery: z.string(),
-      quantity: z.number().int().positive()
+      quantity: z.number().int().nonnegative()
     })
   ).nullable().optional(),
   wantsInvoice: z.boolean(),
@@ -66,7 +70,7 @@ export async function inferIntentWithOpenRouter(message: string): Promise<AgentI
         {
           role: "system",
           content:
-            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|create_order_with_invoice|list_orders|traditional_flow|analytics_query|inventory_diagnostic|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For stock updates, set productUpdate.availableStock. For 'quais produtos estão com estoque baixo', use intent=inventory_diagnostic. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
+            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|add_item_to_order|set_order_item_quantity|remove_item_from_order|planned_workflow|create_order_with_invoice|list_orders|traditional_flow|analytics_query|inventory_diagnostic|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. Use planned_workflow when the user asks for multiple operational tasks in one message, such as creating a customer, product, order, invoice, and report. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For 'adicione um notebook no pedido criado', use intent=add_item_to_order, productQuery=notebook, quantity=1. For 'altere o notebook do pedido para 3 unidades', use intent=set_order_item_quantity, productQuery=notebook, quantity=3. For 'remova o monitor do pedido criado', use intent=remove_item_from_order, productQuery=monitor, quantity=0. For stock updates, set productUpdate.availableStock. For 'quais produtos estão com estoque baixo', use intent=inventory_diagnostic. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
         },
         {
           role: "user",
@@ -122,6 +126,9 @@ function normalizePlannerPayload(raw: unknown, message: string) {
 
   const inferredCatalogName = inferCatalogName(message);
   const inferredProductUpdate = inferProductUpdate(message);
+  const inferredOrderLineQuantityUpdate = inferOrderLineQuantityUpdate(message);
+  const inferredOrderLineRemoval = inferOrderLineRemoval(message);
+  const inferredOrderLineAddition = inferOrderLineAddition(message);
   const inferredOrder = inferOrderRequest(message);
   const inferredAnalytics = inferAnalyticsRequest(message);
   const normalizedAnalytics =
@@ -139,21 +146,40 @@ function normalizePlannerPayload(raw: unknown, message: string) {
 
   return {
     ...payload,
-    intent: inferredOrder?.wantsInvoice
-      ? "create_order_with_invoice"
-      : inferredOrder
-        ? "create_order"
-        : payload.intent,
+    intent: inferredOrderLineRemoval
+      ? "remove_item_from_order"
+      : inferredOrderLineQuantityUpdate
+        ? "set_order_item_quantity"
+        : inferredOrderLineAddition
+          ? "add_item_to_order"
+          : inferredOrder?.wantsInvoice
+            ? "create_order_with_invoice"
+            : inferredOrder
+              ? "create_order"
+              : payload.intent,
     customerQuery: inferredOrder?.customerQuery ?? (typeof payload.customerQuery === "string" ? payload.customerQuery : inferCustomerQuery(message)),
     productQuery: inferredProductUpdate?.productQuery
+      ?? inferredOrderLineRemoval?.productQuery
+      ?? inferredOrderLineQuantityUpdate?.productQuery
+      ?? inferredOrderLineAddition?.productQuery
       ?? inferredOrder?.orderLines[0]?.productQuery
       ?? (comparisonProductQueries && comparisonProductQueries.length > 1
         ? null
         : typeof payload.productQuery === "string" ? payload.productQuery : inferProductQuery(message)),
     catalogName: inferredCatalogName ?? (typeof payload.catalogName === "string" ? cleanCatalogName(payload.catalogName) : null),
     productUpdate: inferredProductUpdate ?? normalizeProductUpdate(payload.productUpdate),
-    quantity: inferredOrder?.orderLines[0]?.quantity ?? normalizeQuantity(payload.quantity),
-    orderLines: inferredOrder?.orderLines ?? normalizeOrderLines(payload.orderLines),
+    quantity: inferredOrderLineRemoval?.quantity
+      ?? inferredOrderLineQuantityUpdate?.quantity
+      ?? inferredOrderLineAddition?.quantity
+      ?? inferredOrder?.orderLines[0]?.quantity
+      ?? normalizeQuantity(payload.quantity),
+    orderLines: inferredOrderLineRemoval
+      ? [inferredOrderLineRemoval]
+      : inferredOrderLineQuantityUpdate
+        ? [inferredOrderLineQuantityUpdate]
+        : inferredOrderLineAddition
+          ? [inferredOrderLineAddition]
+          : inferredOrder?.orderLines ?? normalizeOrderLines(payload.orderLines),
     wantsInvoice: inferredOrder?.wantsInvoice ?? Boolean(payload.wantsInvoice),
     analytics: normalizedAnalytics,
     confidence: normalizeConfidence(payload.confidence)
@@ -192,6 +218,93 @@ function inferAnalyticsRequest(message: string) {
     groupBy,
     dateRange,
     productQueries: productQueries.length ? productQueries : null
+  };
+}
+
+function inferOrderLineAddition(message: string) {
+  const normalized = normalizeText(message);
+  if (!/\b(adicione|adicionar|inclua|incluir|coloque|colocar|acrescente|acrescentar)\b/.test(normalized)) {
+    return null;
+  }
+  if (!/\b(pedido|order)\b/.test(normalized)) {
+    return null;
+  }
+
+  const match = message.match(
+    /\b(?:adicione|adicionar|inclua|incluir|coloque|colocar|acrescente|acrescentar)\s+(?:(\d+|um|uma)\s+)?(.+?)\s+(?:no|na|ao|a)\s+(?:ultimo\s+|último\s+)?pedido\b/i
+  );
+  if (!match) {
+    return null;
+  }
+
+  const quantity = normalizeQuantity(match[1]) ?? 1;
+  const productQuery = cleanProductQuery(match[2] ?? "");
+  if (!productQuery) {
+    return null;
+  }
+
+  return {
+    productQuery,
+    quantity
+  };
+}
+
+function inferOrderLineQuantityUpdate(message: string) {
+  const normalized = normalizeText(message);
+  if (!/\b(altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\b/.test(normalized)) {
+    return null;
+  }
+  if (!/\b(pedido|order)\b/.test(normalized)) {
+    return null;
+  }
+
+  const match =
+    message.match(
+      /\b(?:altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\s+(?:a\s+)?(?:quantidade\s+(?:do|da)\s+)?(.+?)\s+(?:do|da|no|na)\s+(?:ultimo\s+|último\s+)?pedido\s+(?:para|pra|por|em)\s+(\d+|um|uma)\b/i
+    )
+    ?? message.match(
+      /\b(?:altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\s+(.+?)\s+(?:para|pra|por|em)\s+(\d+|um|uma)\s+(?:unidades?\s+)?(?:no|na|do|da)\s+(?:ultimo\s+|último\s+)?pedido\b/i
+    );
+  if (!match) {
+    return null;
+  }
+
+  const productQuery = cleanProductQuery(match[1] ?? "");
+  const quantity = normalizeQuantity(match[2]);
+  if (!productQuery || quantity === null) {
+    return null;
+  }
+
+  return {
+    productQuery,
+    quantity
+  };
+}
+
+function inferOrderLineRemoval(message: string) {
+  const normalized = normalizeText(message);
+  if (!/\b(remova|remover|retire|retirar|exclua|excluir)\b/.test(normalized)) {
+    return null;
+  }
+  if (!/\b(pedido|order)\b/.test(normalized)) {
+    return null;
+  }
+
+  const match = message.match(
+    /\b(?:remova|remover|retire|retirar|exclua|excluir)\s+(.+?)\s+(?:do|da|no|na)\s+(?:ultimo\s+|último\s+)?pedido\b/i
+  );
+  if (!match) {
+    return null;
+  }
+
+  const productQuery = cleanProductQuery(match[1] ?? "");
+  if (!productQuery) {
+    return null;
+  }
+
+  return {
+    productQuery,
+    quantity: 0
   };
 }
 
@@ -258,7 +371,7 @@ function normalizeOrderLines(value: unknown) {
       const payload = line as Record<string, unknown>;
       const productQuery = typeof payload.productQuery === "string" ? cleanProductQuery(payload.productQuery) : "";
       const quantity = normalizeQuantity(payload.quantity);
-      return productQuery && quantity ? { productQuery, quantity } : null;
+      return productQuery && quantity !== null ? { productQuery, quantity } : null;
     })
     .filter((line): line is { productQuery: string; quantity: number } => Boolean(line));
   return lines.length ? lines : null;
@@ -402,8 +515,12 @@ function normalizeQuantity(value: unknown) {
   if (value === null || value === undefined || value === "") {
     return null;
   }
+  const normalized = normalizeText(String(value));
+  if (normalized === "um" || normalized === "uma") {
+    return 1;
+  }
   const numberValue = Number(value);
-  return Number.isInteger(numberValue) && numberValue > 0 ? numberValue : null;
+  return Number.isInteger(numberValue) && numberValue >= 0 ? numberValue : null;
 }
 
 function normalizeConfidence(value: unknown) {

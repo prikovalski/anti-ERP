@@ -7,7 +7,9 @@ import type {
   AnalyticsResult,
   AuditEvent,
   ConceptInvoice,
+  ConversationContext,
   Customer,
+  ExecutionPlan,
   Product,
   SalesOrder,
   SalesOrderPreview,
@@ -17,10 +19,12 @@ import { getCapabilityGateway, type CapabilityGateway } from "../capabilities";
 import { recordAgentStep } from "../observability/mcp-trace";
 import { parseIntentLocally } from "./intent-parser";
 import { inferIntentWithOpenRouter, type AgentIntent } from "./openrouter";
+import { buildLocalExecutionPlan, toExecutionPlan, type PlannedAction, type PlannedWorkflow } from "./planner";
 
 type AgentGraphInput = {
   message: string;
   lastOrderId?: string;
+  conversationContext?: ConversationContext | null;
 };
 
 type AgentRoute =
@@ -28,6 +32,8 @@ type AgentRoute =
   | "analytics"
   | "catalog"
   | "product_update"
+  | "order_update"
+  | "planned_workflow"
   | "invoice"
   | "orders_list"
   | "traditional_flow"
@@ -63,6 +69,8 @@ type RequestedOrderLine = {
   quantity: number;
 };
 
+type OrderUpdateOperation = "add" | "set_quantity" | "remove";
+
 type ResolvedOrderLine = {
   requested: RequestedOrderLine;
   product: Product | null;
@@ -78,6 +86,7 @@ type StockResult = {
 const AgentGraphState = Annotation.Root({
   message: Annotation<string | undefined>,
   lastOrderId: Annotation<string | undefined>,
+  conversationContext: Annotation<ConversationContext | null>,
   mode: Annotation<AgentResponse["mode"]>,
   intent: Annotation<AgentIntent | null>,
   gateway: Annotation<CapabilityGateway | null>,
@@ -93,12 +102,16 @@ const AgentGraphState = Annotation.Root({
   catalogRecord: Annotation<CatalogRecord | null>,
   catalogError: Annotation<string | null>,
   productUpdateCommand: Annotation<ProductUpdateCommand | null>,
+  orderUpdateOperation: Annotation<OrderUpdateOperation | null>,
+  orderUpdateError: Annotation<string | null>,
   productToUpdate: Annotation<Product | null>,
   updatedProduct: Annotation<Product | null>,
   existingOrder: Annotation<SalesOrder | null>,
   invoice: Annotation<ConceptInvoice | null>,
   recentOrders: Annotation<SalesOrder[]>,
   lowStockProducts: Annotation<Product[]>,
+  plannedWorkflow: Annotation<PlannedWorkflow | null>,
+  executionPlan: Annotation<ExecutionPlan | null>,
   traditionalFlow: Annotation<{ traditional: string[]; antiErp: string[] } | null>,
   response: Annotation<AgentResponse | null>
 });
@@ -125,6 +138,13 @@ export const antiErpAgentGraph = new StateGraph(AgentGraphState)
   .addNode("resolve_product_to_update", resolveProductToUpdateNode)
   .addNode("apply_product_update", applyProductUpdateNode)
   .addNode("compose_product_update_response", composeProductUpdateResponseNode)
+  .addNode("validate_order_update_command", validateOrderUpdateCommandNode)
+  .addNode("resolve_order_update_product", resolveOrderUpdateProductNode)
+  .addNode("apply_order_line_update", applyOrderLineUpdateNode)
+  .addNode("compose_order_update_response", composeOrderUpdateResponseNode)
+  .addNode("build_execution_plan", buildExecutionPlanNode)
+  .addNode("execute_execution_plan", executeExecutionPlanNode)
+  .addNode("compose_execution_plan_response", composeExecutionPlanResponseNode)
   .addNode("load_order_for_invoice", loadOrderForInvoiceNode)
   .addNode("create_concept_invoice", createConceptInvoiceNode)
   .addNode("compose_invoice_response", composeInvoiceResponseNode)
@@ -143,6 +163,8 @@ export const antiErpAgentGraph = new StateGraph(AgentGraphState)
     analytics: "load_capability_gateway",
     catalog: "load_capability_gateway",
     product_update: "load_capability_gateway",
+    order_update: "load_capability_gateway",
+    planned_workflow: "load_capability_gateway",
     invoice: "load_capability_gateway",
     orders_list: "load_capability_gateway",
     traditional_flow: "load_capability_gateway",
@@ -154,6 +176,8 @@ export const antiErpAgentGraph = new StateGraph(AgentGraphState)
     analytics: "build_analytics_query",
     catalog: "validate_catalog_command",
     product_update: "validate_product_update_command",
+    order_update: "validate_order_update_command",
+    planned_workflow: "build_execution_plan",
     invoice: "load_order_for_invoice",
     orders_list: "list_recent_orders",
     traditional_flow: "load_traditional_flow",
@@ -190,6 +214,19 @@ export const antiErpAgentGraph = new StateGraph(AgentGraphState)
   })
   .addEdge("apply_product_update", "compose_product_update_response")
   .addEdge("compose_product_update_response", END)
+  .addConditionalEdges("validate_order_update_command", pickOrderUpdateCommandReadiness, {
+    ready: "resolve_order_update_product",
+    needs_context: "compose_order_update_response"
+  })
+  .addConditionalEdges("resolve_order_update_product", pickOrderUpdateProductReadiness, {
+    ready: "apply_order_line_update",
+    not_found: "compose_order_update_response"
+  })
+  .addEdge("apply_order_line_update", "compose_order_update_response")
+  .addEdge("compose_order_update_response", END)
+  .addEdge("build_execution_plan", "execute_execution_plan")
+  .addEdge("execute_execution_plan", "compose_execution_plan_response")
+  .addEdge("compose_execution_plan_response", END)
   .addConditionalEdges("load_order_for_invoice", pickInvoiceOrderReadiness, {
     ready: "create_concept_invoice",
     needs_context: "compose_invoice_response"
@@ -209,6 +246,7 @@ export async function runAgentGraph(input: AgentGraphInput) {
   const result = await antiErpAgentGraph.invoke({
     message: normalizeInputMessage(input.message),
     lastOrderId: input.lastOrderId,
+    conversationContext: input.conversationContext ?? null,
     mode: process.env.OPENROUTER_API_KEY ? "openrouter" : "langgraph",
     intent: null,
     gateway: null,
@@ -224,12 +262,16 @@ export async function runAgentGraph(input: AgentGraphInput) {
     catalogRecord: null,
     catalogError: null,
     productUpdateCommand: null,
+    orderUpdateOperation: null,
+    orderUpdateError: null,
     productToUpdate: null,
     updatedProduct: null,
     existingOrder: null,
     invoice: null,
     recentOrders: [],
     lowStockProducts: [],
+    plannedWorkflow: null,
+    executionPlan: null,
     traditionalFlow: null,
     response: null
   });
@@ -340,15 +382,19 @@ async function routeIntentNode(state: AgentGraphStateValue) {
         ? "catalog"
         : state.intent.intent === "update_product"
           ? "product_update"
-          : state.intent.intent === "create_invoice"
-            ? "invoice"
-            : state.intent.intent === "list_orders"
-              ? "orders_list"
-              : state.intent.intent === "traditional_flow"
-                ? "traditional_flow"
-                : state.intent.intent === "inventory_diagnostic"
-                  ? "inventory_diagnostic"
-                : "unknown";
+          : isOrderUpdateIntent(state.intent)
+            ? "order_update"
+            : state.intent.intent === "planned_workflow"
+              ? "planned_workflow"
+              : state.intent.intent === "create_invoice"
+                ? "invoice"
+                : state.intent.intent === "list_orders"
+                  ? "orders_list"
+                  : state.intent.intent === "traditional_flow"
+                    ? "traditional_flow"
+                    : state.intent.intent === "inventory_diagnostic"
+                      ? "inventory_diagnostic"
+                      : "unknown";
   await recordAgentStep({
     name: "route_intent",
     status: "success",
@@ -820,6 +866,297 @@ async function composeProductUpdateResponseNode(state: AgentGraphStateValue) {
   };
 }
 
+async function validateOrderUpdateCommandNode(state: AgentGraphStateValue) {
+  if (!state.intent) {
+    throw new Error("Agent graph is missing intent.");
+  }
+
+  const startedAt = performance.now();
+  const requestedLines = getRequestedOrderLines(state.intent).slice(0, 1);
+  const orderUpdateOperation = getOrderUpdateOperation(state.intent);
+  const hasContext = Boolean(state.lastOrderId && requestedLines.length > 0);
+  await recordAgentStep({
+    name: "validate_order_update_command",
+    status: "success",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      lastOrderId: state.lastOrderId ?? null,
+      requestedLines,
+      orderUpdateOperation,
+      hasContext
+    }
+  });
+
+  return {
+    requestedLines,
+    orderUpdateOperation
+  };
+}
+
+function pickOrderUpdateCommandReadiness(state: AgentGraphStateValue) {
+  return state.lastOrderId && state.requestedLines.length > 0 && state.orderUpdateOperation ? "ready" : "needs_context";
+}
+
+async function resolveOrderUpdateProductNode(state: AgentGraphStateValue) {
+  if (!state.gateway || state.requestedLines.length === 0) {
+    throw new Error("Agent graph is missing capability gateway or order update command.");
+  }
+
+  const startedAt = performance.now();
+  const requested = state.requestedLines[0] as RequestedOrderLine;
+  const matches = await searchProductWithFallback(state.gateway, requested.productQuery);
+  const resolvedLines = [
+    {
+      requested,
+      product: matches[0] ?? null
+    }
+  ];
+
+  await recordAgentStep({
+    name: "resolve_order_update_product",
+    status: "success",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      productQuery: requested.productQuery,
+      matchedProduct: resolvedLines[0]?.product?.name ?? null,
+      matches: matches.length
+    }
+  });
+
+  return {
+    resolvedLines
+  };
+}
+
+function pickOrderUpdateProductReadiness(state: AgentGraphStateValue) {
+  const line = state.resolvedLines[0] as ResolvedOrderLine | undefined;
+  return line?.product ? "ready" : "not_found";
+}
+
+async function applyOrderLineUpdateNode(state: AgentGraphStateValue) {
+  if (!state.gateway || !state.lastOrderId) {
+    throw new Error("Agent graph is missing capability gateway or order context.");
+  }
+  const line = state.resolvedLines[0] as ResolvedOrderLine | undefined;
+  if (!line?.product) {
+    throw new Error("Agent graph is missing resolved product for order update.");
+  }
+
+  const startedAt = performance.now();
+  try {
+    const existingOrder =
+      state.orderUpdateOperation === "remove"
+        ? await state.gateway.removeSalesOrderLine({
+            salesOrderId: state.lastOrderId,
+            productId: line.product.id
+          })
+        : state.orderUpdateOperation === "set_quantity"
+          ? await state.gateway.setSalesOrderLineQuantity({
+              salesOrderId: state.lastOrderId,
+              productId: line.product.id,
+              quantity: line.requested.quantity
+            })
+          : await state.gateway.addSalesOrderLine({
+              salesOrderId: state.lastOrderId,
+              productId: line.product.id,
+              quantity: line.requested.quantity
+            });
+
+    await recordAgentStep({
+      name: "apply_order_line_update",
+      status: "success",
+      durationMs: performance.now() - startedAt,
+      outputs: {
+        salesOrderId: existingOrder.id,
+        product: line.product.name,
+        quantity: line.requested.quantity,
+        orderUpdateOperation: state.orderUpdateOperation,
+        subtotal: existingOrder.subtotal
+      }
+    });
+
+    return {
+      existingOrder,
+      orderUpdateError: null
+    };
+  } catch (error) {
+    const orderUpdateError = error instanceof Error ? error.message : "Unknown order update error.";
+    await recordAgentStep({
+      name: "apply_order_line_update",
+      status: "error",
+      durationMs: performance.now() - startedAt,
+      error,
+      outputs: {
+        product: line.product.name,
+        quantity: line.requested.quantity,
+        orderUpdateOperation: state.orderUpdateOperation
+      }
+    });
+
+    return {
+      existingOrder: null,
+      orderUpdateError
+    };
+  }
+}
+
+async function composeOrderUpdateResponseNode(state: AgentGraphStateValue) {
+  const startedAt = performance.now();
+  const response = createOrderUpdateResponse(state);
+
+  await recordAgentStep({
+    name: "compose_order_update_response",
+    status: "success",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      updated: Boolean(response.order),
+      auditEvents: response.auditEvents.length
+    }
+  });
+
+  return {
+    response
+  };
+}
+
+async function buildExecutionPlanNode(state: AgentGraphStateValue) {
+  const startedAt = performance.now();
+  const plannedWorkflow = buildLocalExecutionPlan(normalizeInputMessage(state.message));
+  const executionPlan = plannedWorkflow ? toExecutionPlan(plannedWorkflow) : null;
+
+  await recordAgentStep({
+    name: "build_execution_plan",
+    status: executionPlan ? "success" : "error",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      steps: executionPlan?.steps.map((step) => step.action) ?? []
+    }
+  });
+
+  return {
+    plannedWorkflow,
+    executionPlan
+  };
+}
+
+async function executeExecutionPlanNode(state: AgentGraphStateValue) {
+  if (!state.gateway || !state.plannedWorkflow || !state.executionPlan) {
+    return {};
+  }
+
+  const startedAt = performance.now();
+  const executionPlan = cloneExecutionPlan(state.executionPlan);
+  const context: {
+    customers: Customer[];
+    products: Product[];
+    suppliers: Supplier[];
+    preview: SalesOrderPreview | null;
+    invoice: ConceptInvoice | null;
+    analyticsResult: AnalyticsResult | null;
+  } = {
+    customers: [],
+    products: [],
+    suppliers: [],
+    preview: null,
+    invoice: null,
+    analyticsResult: null
+  };
+
+  for (const [index, action] of state.plannedWorkflow.actions.entries()) {
+    const step = executionPlan.steps[index];
+    if (!step) {
+      continue;
+    }
+
+    try {
+      if (action.type === "create_customer") {
+        const customer = await ensureCustomerForPlan(state.gateway, action.name);
+        context.customers.push(customer);
+        markPlanStep(step, "executed", `Cliente ativo: ${customer.name}.`);
+      } else if (action.type === "create_product") {
+        const product = await ensureProductForPlan(state.gateway, action.name);
+        context.products.push(product);
+        markPlanStep(step, "executed", `Produto ativo: ${product.name}.`);
+      } else if (action.type === "create_supplier") {
+        const supplier = await state.gateway.createSupplier({ name: action.name });
+        context.suppliers.push(supplier);
+        markPlanStep(step, "executed", `Fornecedor cadastrado: ${supplier.name}.`);
+      } else if (action.type === "prepare_sales_order") {
+        const preview = await prepareSalesOrderFromPlan(state.gateway, action, context, state.conversationContext);
+        context.preview = preview;
+        markPlanStep(
+          step,
+          "pending_confirmation",
+          action.wantsInvoice
+            ? "Pedido preparado. Nota conceitual ficara para depois da confirmacao."
+            : "Pedido preparado e aguardando confirmacao."
+        );
+      } else if (action.type === "create_invoice") {
+        const orderId = state.lastOrderId ?? state.conversationContext?.activeOrderId ?? null;
+        if (!orderId) {
+          markPlanStep(step, "pending_confirmation", "Crie ou confirme um pedido antes de gerar a nota.");
+        } else {
+          const invoice = await state.gateway.createConceptInvoice({ salesOrderId: orderId });
+          context.invoice = invoice;
+          markPlanStep(step, "executed", `Nota conceitual gerada: ${invoice.id}.`);
+        }
+      } else if (action.type === "query_report") {
+        const analyticsResult = await state.gateway.querySalesMetrics({
+          metric: action.metric,
+          dateRange: action.dateRange,
+          groupBy: action.groupBy,
+          productQueries: action.productQueries,
+          customerQuery: action.customerQuery
+        });
+        context.analyticsResult = analyticsResult;
+        markPlanStep(step, "executed", `Relatorio gerado: ${analyticsResult.label}.`);
+      }
+    } catch (error) {
+      markPlanStep(step, "blocked", formatPlanError(error));
+    }
+  }
+
+  await recordAgentStep({
+    name: "execute_execution_plan",
+    status: "success",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      executed: executionPlan.steps.filter((step) => step.status === "executed").length,
+      pending: executionPlan.steps.filter((step) => step.status === "pending_confirmation").length,
+      blocked: executionPlan.steps.filter((step) => step.status === "blocked").length
+    }
+  });
+
+  return {
+    executionPlan,
+    preview: context.preview,
+    invoice: context.invoice,
+    analyticsResult: context.analyticsResult,
+    customer: context.customers.at(-1) ?? null,
+    catalogRecord: context.products.at(-1) ?? context.customers.at(-1) ?? context.suppliers.at(-1) ?? null
+  };
+}
+
+async function composeExecutionPlanResponseNode(state: AgentGraphStateValue) {
+  const startedAt = performance.now();
+  const response = createExecutionPlanResponse(state);
+
+  await recordAgentStep({
+    name: "compose_execution_plan_response",
+    status: "success",
+    durationMs: performance.now() - startedAt,
+    outputs: {
+      steps: state.executionPlan?.steps.length ?? 0,
+      hasPreview: Boolean(response.preview),
+      hasReport: Boolean(response.analyticsResult)
+    }
+  });
+
+  return {
+    response
+  };
+}
+
 async function loadOrderForInvoiceNode(state: AgentGraphStateValue) {
   if (!state.gateway) {
     throw new Error("Agent graph is missing capability gateway.");
@@ -1047,6 +1384,12 @@ function isCatalogIntent(intent: AgentIntent) {
     || intent.intent === "create_supplier";
 }
 
+function isOrderUpdateIntent(intent: AgentIntent) {
+  return intent.intent === "add_item_to_order"
+    || intent.intent === "set_order_item_quantity"
+    || intent.intent === "remove_item_from_order";
+}
+
 function getCatalogKind(intent: AgentIntent): CatalogKind | null {
   if (intent.intent === "create_customer") {
     return "customer";
@@ -1064,10 +1407,139 @@ function getRequestedOrderLines(intent: AgentIntent): RequestedOrderLine[] {
   if (intent.orderLines && intent.orderLines.length > 0) {
     return intent.orderLines;
   }
-  if (intent.productQuery && intent.quantity) {
+  if (intent.productQuery && intent.quantity !== null) {
     return [{ productQuery: intent.productQuery, quantity: intent.quantity }];
   }
   return [];
+}
+
+function getOrderUpdateOperation(intent: AgentIntent): OrderUpdateOperation | null {
+  if (intent.intent === "add_item_to_order") {
+    return "add";
+  }
+  if (intent.intent === "set_order_item_quantity") {
+    return "set_quantity";
+  }
+  if (intent.intent === "remove_item_from_order") {
+    return "remove";
+  }
+  return null;
+}
+
+async function ensureCustomerForPlan(gateway: CapabilityGateway, name: string) {
+  try {
+    return await gateway.createCustomer({ name });
+  } catch (error) {
+    if (!isDuplicateError(error)) {
+      throw error;
+    }
+    const matches = await gateway.searchCustomer({ query: name });
+    const existing = matches[0];
+    if (!existing) {
+      throw error;
+    }
+    return existing;
+  }
+}
+
+async function ensureProductForPlan(gateway: CapabilityGateway, name: string) {
+  try {
+    return await gateway.createProduct({ name });
+  } catch (error) {
+    if (!isDuplicateError(error)) {
+      throw error;
+    }
+    const matches = await searchProductWithFallback(gateway, name);
+    const existing = matches[0];
+    if (!existing) {
+      throw error;
+    }
+    return existing;
+  }
+}
+
+async function prepareSalesOrderFromPlan(
+  gateway: CapabilityGateway,
+  action: Extract<PlannedAction, { type: "prepare_sales_order" }>,
+  context: { customers: Customer[]; products: Product[] },
+  conversationContext: ConversationContext | null | undefined
+) {
+  const customerQuery = action.customerQuery
+    ?? context.customers.at(-1)?.name
+    ?? conversationContext?.activeCustomer?.name
+    ?? null;
+  if (!customerQuery) {
+    throw new Error("Missing customer for planned sales order.");
+  }
+  if (action.lines.length === 0) {
+    throw new Error("Missing products for planned sales order.");
+  }
+
+  const customer = context.customers.find((candidate) => normalize(candidate.name).includes(normalize(customerQuery)))
+    ?? (await gateway.searchCustomer({ query: customerQuery }))[0]
+    ?? null;
+  if (!customer) {
+    throw new Error(`Customer ${customerQuery} not found.`);
+  }
+
+  const resolvedLines = await Promise.all(
+    action.lines.map(async (line) => {
+      const product = context.products.find((candidate) => normalize(candidate.name).includes(normalize(line.productQuery)))
+        ?? (await searchProductWithFallback(gateway, line.productQuery))[0]
+        ?? null;
+      if (!product) {
+        throw new Error(`Product ${line.productQuery} not found.`);
+      }
+      return {
+        productId: product.id,
+        quantity: line.quantity
+      };
+    })
+  );
+
+  return gateway.prepareSalesOrder({
+    customerId: customer.id,
+    lines: resolvedLines
+  });
+}
+
+function cloneExecutionPlan(plan: ExecutionPlan): ExecutionPlan {
+  return {
+    summary: plan.summary,
+    steps: plan.steps.map((step) => ({ ...step }))
+  };
+}
+
+function markPlanStep(
+  step: ExecutionPlan["steps"][number],
+  status: ExecutionPlan["steps"][number]["status"],
+  detail: string
+) {
+  step.status = status;
+  step.detail = detail;
+}
+
+function isDuplicateError(error: unknown) {
+  return error instanceof Error && /already exists/i.test(error.message);
+}
+
+function formatPlanError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return "Etapa bloqueada por erro desconhecido.";
+  }
+  if (/already exists/i.test(error.message)) {
+    return "Registro ja existente.";
+  }
+  if (/Missing customer/i.test(error.message)) {
+    return "Cliente nao informado para preparar o pedido.";
+  }
+  if (/Missing products/i.test(error.message)) {
+    return "Produtos nao informados para preparar o pedido.";
+  }
+  if (/not found/i.test(error.message)) {
+    return "Nao encontrei um dos registros necessarios.";
+  }
+  return "Etapa bloqueada por regra de negocio.";
 }
 
 function createPreparedOrderResponse(state: AgentGraphStateValue): AgentResponse {
@@ -1233,6 +1705,178 @@ function createProductUpdateResponse(state: AgentGraphStateValue): AgentResponse
   };
 }
 
+function createOrderUpdateResponse(state: AgentGraphStateValue): AgentResponse {
+  const requested = state.requestedLines[0] as RequestedOrderLine | undefined;
+  const resolved = state.resolvedLines[0] as ResolvedOrderLine | undefined;
+  const operation = state.orderUpdateOperation as OrderUpdateOperation | null;
+
+  if (!state.lastOrderId) {
+    const action = getOrderUpdateActionLabel(operation);
+    return {
+      mode: state.mode,
+      message: {
+        id: createId("msg"),
+        role: "agent",
+        text: `Ainda nao tenho um pedido confirmado nesta sessao. Crie e confirme um pedido primeiro; depois eu ${action} nele.`
+      },
+      auditEvents: [audit("order_line_update_blocked", "Order update blocked without an existing order.", "agent")],
+      lastOrderId: null
+    };
+  }
+
+  if (!requested || !operation) {
+    return {
+      mode: state.mode,
+      message: {
+        id: createId("msg"),
+        role: "agent",
+        text: "Consigo atualizar itens do pedido, mas preciso saber qual produto e a acao desejada."
+      },
+      auditEvents: [audit("order_line_update_context_required", "Order update blocked without product or action.", "agent")],
+      lastOrderId: state.lastOrderId
+    };
+  }
+
+  if (!resolved?.product) {
+    return {
+      mode: state.mode,
+      message: {
+        id: createId("msg"),
+        role: "agent",
+        text: `Nao encontrei um produto chamado ${requested.productQuery}.`
+      },
+      auditEvents: [audit("order_line_update_product_not_found", `Product ${requested.productQuery} was not found.`, "agent")],
+      lastOrderId: state.lastOrderId
+    };
+  }
+
+  const order = state.existingOrder as SalesOrder | null;
+  if (!order) {
+    const reason = formatOrderUpdateError(state.orderUpdateError);
+    return {
+      mode: state.mode,
+      message: {
+        id: createId("msg"),
+        role: "agent",
+        text: `Nao consegui atualizar o pedido ${state.lastOrderId}. ${reason} Nenhuma alteracao foi aplicada.`
+      },
+      auditEvents: [audit("order_line_update_failed", `Failed to update sales order ${state.lastOrderId}.`, "agent")],
+      lastOrderId: state.lastOrderId
+    };
+  }
+
+  const action = getOrderUpdateSuccessText(operation, requested, resolved.product, order);
+  const auditAction = getOrderUpdateAuditAction(operation);
+  return {
+    mode: state.mode,
+    order,
+    message: {
+      id: createId("msg"),
+      role: "agent",
+      text: action
+    },
+    auditEvents: [
+      audit("search_product", `Matched product ${resolved.product.name}.`),
+      audit(auditAction, `Updated ${resolved.product.name} in ${order.id}.`)
+    ],
+    lastOrderId: order.id
+  };
+}
+
+function createExecutionPlanResponse(state: AgentGraphStateValue): AgentResponse {
+  const executionPlan = state.executionPlan as ExecutionPlan | null;
+  if (!executionPlan) {
+    return {
+      mode: state.mode,
+      message: {
+        id: createId("msg"),
+        role: "agent",
+        text: "Nao consegui montar um plano executavel para essa solicitacao. Tente separar a operacao em etapas menores."
+      },
+      auditEvents: [audit("execution_plan_failed", "Agent could not build an execution plan.", "agent")],
+      lastOrderId: state.lastOrderId ?? null
+    };
+  }
+
+  const executed = executionPlan.steps.filter((step) => step.status === "executed").length;
+  const pending = executionPlan.steps.filter((step) => step.status === "pending_confirmation").length;
+  const blocked = executionPlan.steps.filter((step) => step.status === "blocked").length;
+  const statusSummary = [
+    `${executed} executada(s)`,
+    pending ? `${pending} pendente(s) de confirmacao` : null,
+    blocked ? `${blocked} bloqueada(s)` : null
+  ].filter(Boolean).join(", ");
+
+  return {
+    mode: state.mode,
+    executionPlan,
+    preview: state.preview ?? null,
+    invoice: state.invoice ?? null,
+    analyticsResult: state.analyticsResult ?? null,
+    message: {
+      id: createId("msg"),
+      role: "agent",
+      text: `Montei e executei um plano com ${executionPlan.steps.length} etapa(s): ${statusSummary}.`
+    },
+    auditEvents: [
+      audit("build_execution_plan", `Built plan with ${executionPlan.steps.length} step(s).`),
+      audit("execute_execution_plan", `Plan result: ${statusSummary}.`)
+    ],
+    lastOrderId: state.lastOrderId ?? null
+  };
+}
+
+function getOrderUpdateActionLabel(operation: OrderUpdateOperation | null) {
+  if (operation === "remove") {
+    return "removo itens";
+  }
+  if (operation === "set_quantity") {
+    return "ajusto quantidades";
+  }
+  return "adiciono itens";
+}
+
+function getOrderUpdateSuccessText(
+  operation: OrderUpdateOperation,
+  requested: RequestedOrderLine,
+  product: Product,
+  order: SalesOrder
+) {
+  if (operation === "remove") {
+    return `Removi ${product.name} do pedido ${order.id}. Novo total: ${money(order.subtotal)}.`;
+  }
+  if (operation === "set_quantity") {
+    return `Alterei a quantidade de ${product.name} no pedido ${order.id} para ${requested.quantity}. Novo total: ${money(order.subtotal)}.`;
+  }
+  return `Adicionei ${requested.quantity}x ${product.name} ao pedido ${order.id}. Novo total: ${money(order.subtotal)}.`;
+}
+
+function getOrderUpdateAuditAction(operation: OrderUpdateOperation) {
+  if (operation === "remove") {
+    return "remove_sales_order_line";
+  }
+  if (operation === "set_quantity") {
+    return "set_sales_order_line_quantity";
+  }
+  return "add_sales_order_line";
+}
+
+function formatOrderUpdateError(error: string | null | undefined) {
+  if (!error) {
+    return "";
+  }
+  if (/must keep at least one item/i.test(error)) {
+    return "O pedido precisa manter pelo menos um item.";
+  }
+  if (/has only/i.test(error)) {
+    return "Nao ha estoque suficiente para essa quantidade.";
+  }
+  if (/is not in sales order/i.test(error)) {
+    return "Esse produto nao esta no pedido informado.";
+  }
+  return "A regra de negocio bloqueou a operacao.";
+}
+
 function createInvoiceResponse(state: AgentGraphStateValue): AgentResponse {
   if (!state.lastOrderId || !state.existingOrder) {
     return {
@@ -1332,7 +1976,7 @@ function createUnknownResponse(state: AgentGraphStateValue): AgentResponse {
       id: createId("msg"),
       role: "agent",
       text:
-        "Posso cadastrar clientes, produtos e fornecedores, criar pedidos, gerar nota conceitual para um pedido confirmado, listar pedidos recentes, diagnosticar estoque baixo ou comparar com um ERP tradicional."
+        "Posso cadastrar clientes, produtos e fornecedores, criar pedidos, adicionar itens ao pedido confirmado, gerar nota conceitual, listar pedidos recentes, diagnosticar estoque baixo ou comparar com um ERP tradicional."
     },
     auditEvents: [audit("unknown_intent", "Agent could not map the message to a supported MCP capability.", "agent")],
     lastOrderId: state.lastOrderId ?? null

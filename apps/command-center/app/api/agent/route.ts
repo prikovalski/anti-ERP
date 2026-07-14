@@ -1,5 +1,6 @@
 import { AgentRequestSchema, AgentResponseSchema } from "@anti-erp/shared";
 import { NextResponse } from "next/server";
+import { evolveConversationContext } from "@/lib/agent/conversation-context";
 import { runAgentGraph } from "@/lib/agent/agent-graph";
 import { withMcpTrace } from "@/lib/observability/mcp-trace";
 
@@ -22,18 +23,28 @@ export async function POST(request: Request) {
         name: "agent.command",
         inputs: {
           commandLength: body.message.length,
-          hasLastOrderId: Boolean(body.lastOrderId)
+          hasLastOrderId: Boolean(body.lastOrderId ?? body.conversationContext?.activeOrderId),
+          hasConversationContext: Boolean(body.conversationContext)
         },
         tags: ["command"]
       },
       async () => {
         return runAgentGraph({
           message: body.message,
-          lastOrderId: body.lastOrderId
+          lastOrderId: body.lastOrderId ?? body.conversationContext?.activeOrderId ?? undefined,
+          conversationContext: body.conversationContext
         });
       }
     );
-    return NextResponse.json(AgentResponseSchema.parse({ ...response, mcpTrace: trace }));
+    return NextResponse.json(AgentResponseSchema.parse({
+      ...response,
+      mcpTrace: trace,
+      conversationContext: evolveConversationContext({
+        current: body.conversationContext,
+        response,
+        userCommand: body.message
+      })
+    }));
   } catch (error) {
     console.error("Agent capability gateway failed. Returning controlled error.", error);
     return capabilityFailureResponse();

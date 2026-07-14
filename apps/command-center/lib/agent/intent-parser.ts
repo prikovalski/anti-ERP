@@ -1,4 +1,16 @@
 import type { AgentIntent } from "./openrouter";
+import {
+  extractAnalytics,
+  extractCustomerQuery,
+  extractFiscalIntent,
+  extractOrderLines as extractEntityOrderLines,
+  extractProductUpdate,
+  inferProductQueries as inferEntityProductQueries,
+  parseQuantity,
+} from "./entity-extractor";
+import { buildLocalExecutionPlan } from "./planner";
+
+const QUANTITY_TOKEN = "\\d+|um|uma|dois|duas|tres|três|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|vinte";
 
 function normalize(value: string) {
   return value
@@ -9,10 +21,6 @@ function normalize(value: string) {
 
 function cleanCatalogName(value: string) {
   return value.trim().replace(/\s+/g, " ").replace(/[.!?]+$/g, "");
-}
-
-function cleanCustomerQuery(value: string) {
-  return cleanCatalogName(value).replace(/^(?:o|a|os|as|um|uma)\s+/i, "");
 }
 
 function extractCatalogCommand(message: string) {
@@ -29,46 +37,14 @@ function extractCatalogCommand(message: string) {
   };
 }
 
-function parsePtNumber(value: string) {
-  const cleaned = value
-    .replace(/r\$/gi, "")
-    .replace(/\breais?\b/gi, "")
-    .replace(/\bunidades?\b/gi, "")
-    .replace(/[^\d.,-]/g, "")
-    .trim();
-  if (!cleaned) {
-    return null;
-  }
-  const normalized = cleaned.includes(",")
-    ? cleaned.replace(/\./g, "").replace(",", ".")
-    : cleaned;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
-
 function extractProductUpdateCommand(message: string) {
-  const match = message.match(/\b(?:atualize|atualizar|altere|alterar|mude|mudar|defina|definir|ajuste|ajustar)\s+(?:o\s+|a\s+)?(pre[cç]o|valor|estoque)\s+(?:do\s+|da\s+)?produto\s+(.+?)\s+(?:para|pra|por|em)\s+(.+)$/i);
-  if (!match) {
-    return null;
-  }
-  const field = normalize(match[1] ?? "");
-  const productQuery = cleanCatalogName(match[2] ?? "");
-  const numberValue = parsePtNumber(match[3] ?? "");
-  if (!productQuery || numberValue === null) {
-    return null;
-  }
-  return {
-    productQuery,
-    unitPrice: field === "estoque" ? null : numberValue,
-    availableStock: field === "estoque" ? Math.trunc(numberValue) : null
-  };
+  return extractProductUpdate(message);
 }
 
 function extractOrderCommand(message: string) {
   const normalized = normalize(message);
   const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
-  const mentionsInvoice = /\b(nota|nf|invoice|fatura)\b/.test(normalized);
-  const customerMatch = message.match(/\b(?:para|pra|pro)\s+(.+?)\s+(?:com|contendo|incluindo|de\s+(?=\d)|itens?\b|os\s+itens?\b)/i);
+  const mentionsInvoice = extractFiscalIntent(message);
   const orderLines = extractOrderLines(message);
 
   if (!mentionsOrder && orderLines.length === 0) {
@@ -76,36 +52,105 @@ function extractOrderCommand(message: string) {
   }
 
   return {
-    customerQuery: customerMatch ? cleanCustomerQuery(customerMatch[1] ?? "") : null,
+    customerQuery: extractCustomerQuery(message),
     orderLines,
     wantsInvoice: mentionsInvoice
   };
 }
 
+function extractOrderLineAdditionCommand(message: string) {
+  const normalized = normalize(message);
+  if (!/\b(adicione|adicionar|inclua|incluir|coloque|colocar|acrescente|acrescentar)\b/.test(normalized)) {
+    return null;
+  }
+  if (!/\b(pedido|order)\b/.test(normalized)) {
+    return null;
+  }
+
+  const match = message.match(
+    new RegExp(`\\b(?:adicione|adicionar|inclua|incluir|coloque|colocar|acrescente|acrescentar)\\s+(?:(${QUANTITY_TOKEN})\\s+)?(.+?)\\s+(?:no|na|ao|a)\\s+(?:ultimo\\s+|último\\s+)?pedido\\b`, "i")
+  );
+  if (!match) {
+    return null;
+  }
+
+  const quantity = parseQuantityWord(match[1] ?? "") ?? 1;
+  const productQuery = cleanProductQuery(match[2] ?? "");
+  if (!productQuery) {
+    return null;
+  }
+
+  return {
+    productQuery,
+    quantity
+  };
+}
+
+function extractOrderLineQuantityUpdateCommand(message: string) {
+  const normalized = normalize(message);
+  if (!/\b(altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\b/.test(normalized)) {
+    return null;
+  }
+  if (!/\b(pedido|order)\b/.test(normalized)) {
+    return null;
+  }
+
+  const match =
+    message.match(
+      new RegExp(`\\b(?:altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\\s+(?:a\\s+)?(?:quantidade\\s+(?:do|da)\\s+)?(.+?)\\s+(?:do|da|no|na)\\s+(?:ultimo\\s+|último\\s+)?pedido\\s+(?:para|pra|por|em)\\s+(${QUANTITY_TOKEN})\\b`, "i")
+    )
+    ?? message.match(
+      new RegExp(`\\b(?:altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\\s+(.+?)\\s+(?:para|pra|por|em)\\s+(${QUANTITY_TOKEN})\\s+(?:unidades?\\s+)?(?:no|na|do|da)\\s+(?:ultimo\\s+|último\\s+)?pedido\\b`, "i")
+    );
+  if (!match) {
+    return null;
+  }
+
+  const productQuery = cleanProductQuery(match[1] ?? "");
+  const quantity = parseQuantityWord(match[2] ?? "");
+  if (!productQuery || quantity === null) {
+    return null;
+  }
+
+  return {
+    productQuery,
+    quantity
+  };
+}
+
+function extractOrderLineRemovalCommand(message: string) {
+  const normalized = normalize(message);
+  if (!/\b(remova|remover|retire|retirar|exclua|excluir)\b/.test(normalized)) {
+    return null;
+  }
+  if (!/\b(pedido|order)\b/.test(normalized)) {
+    return null;
+  }
+
+  const match = message.match(
+    /\b(?:remova|remover|retire|retirar|exclua|excluir)\s+(.+?)\s+(?:do|da|no|na)\s+(?:ultimo\s+|último\s+)?pedido\b/i
+  );
+  if (!match) {
+    return null;
+  }
+
+  const productQuery = cleanProductQuery(match[1] ?? "");
+  if (!productQuery) {
+    return null;
+  }
+
+  return {
+    productQuery,
+    quantity: 0
+  };
+}
+
 function extractOrderLines(message: string) {
-  const segmentMatch =
-    message.match(/\b(?:com|contendo|incluindo)\s+(.+)$/i)
-    ?? message.match(/\b(?:para|pra|pro)\s+.+?\s+de\s+(\d+.+)$/i);
-  if (!segmentMatch) {
-    return [];
-  }
+  return extractEntityOrderLines(message);
+}
 
-  const segment = (segmentMatch[1] ?? "")
-    .replace(/^(?:os\s+|as\s+)?itens?:?\s*/i, "")
-    .replace(/\s+(?:e\s+)?(?:gere|gerar|emita|emitir|crie|criar)\s+(?:a\s+|uma\s+)?(?:nota|nf|invoice|fatura).*$/i, "")
-    .replace(/[.!?]+$/g, "");
-  const lines: Array<{ productQuery: string; quantity: number }> = [];
-  const itemPattern = /(\d+)\s+([A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\s-]*?)(?=\s*(?:,|\s+e\s+\d+|\s+com\s+\d+|$))/gi;
-
-  for (const match of segment.matchAll(itemPattern)) {
-    const quantity = Number(match[1]);
-    const productQuery = cleanProductQuery(match[2] ?? "");
-    if (Number.isInteger(quantity) && quantity > 0 && productQuery) {
-      lines.push({ productQuery, quantity });
-    }
-  }
-
-  return lines;
+function parseQuantityWord(value: string) {
+  return parseQuantity(value);
 }
 
 function cleanProductQuery(value: string) {
@@ -122,26 +167,38 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
   }
 
   const normalized = normalize(message);
+  const executionPlan = buildLocalExecutionPlan(message);
   const catalogCommand = extractCatalogCommand(message);
   const productUpdate = extractProductUpdateCommand(message);
+  const orderLineQuantityUpdate = extractOrderLineQuantityUpdateCommand(message);
+  const orderLineRemoval = extractOrderLineRemovalCommand(message);
+  const orderLineAddition = extractOrderLineAdditionCommand(message);
   const orderCommand = extractOrderCommand(message);
   const quantityMatch = normalized.match(/(\d+)\s+(notebook|notebooks|monitor|monitores|teclado|teclados)/);
-  const mentionsInvoice = /\b(nota|invoice|fatura)\b/.test(normalized);
+  const mentionsInvoice = extractFiscalIntent(message);
   const mentionsOrder = /\b(pedido|venda|order)\b/.test(normalized);
   const asksTraditionalFlow = /\b(tradicional|erp classico|erp tradicional|compar)/.test(normalized);
   const asksList = /\b(liste|listar|recentes|hoje|criados)\b/.test(normalized);
-  const asksAnalytics = /\b(quantos|quanto|qual|quais|ranking|vendemos|vendidos|vendeu|venderam|saindo|saida|saiu|comprou|compraram|faturamento|receita)\b/.test(normalized);
+  const asksAnalytics = /\b(quantos|quanto|qual|quais|ranking|vendemos|vendidos|vendeu|venderam|saindo|saida|saiu|comprou|compraram|faturamento|receita|relatorio|resumo|analise|indicadores)\b/.test(normalized);
   const asksInventoryDiagnostic = /\bestoque\s+baixo\b|\bbaixo\s+estoque\b|\breposi[cç]ao\b|\brepor\b|\bacabando\b/.test(normalized);
-  const analyticsMetric = inferAnalyticsMetric(normalized);
-  const analyticsGroupBy = inferAnalyticsGroupBy(normalized);
+  const analytics = extractAnalytics(message);
   const analyticsProductQueries = inferProductQueries(normalized);
-  const dateRange = normalized.includes("semana")
-    ? "last_7_days"
-    : normalized.includes("mes")
-      ? "month_to_date"
-      : normalized.includes("hoje")
-        ? "today"
-        : "all_time";
+
+  if (executionPlan) {
+    return {
+      intent: "planned_workflow",
+      customerQuery: null,
+      productQuery: null,
+      catalogName: null,
+      productUpdate: null,
+      quantity: null,
+      wantsInvoice: executionPlan.actions.some((action) =>
+        action.type === "create_invoice" || (action.type === "prepare_sales_order" && action.wantsInvoice)
+      ),
+      analytics: null,
+      confidence: 0.9
+    };
+  }
 
   if (productUpdate) {
     return {
@@ -154,6 +211,51 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
       wantsInvoice: false,
       analytics: null,
       confidence: 0.94
+    };
+  }
+
+  if (orderLineAddition) {
+    return {
+      intent: "add_item_to_order",
+      customerQuery: null,
+      productQuery: orderLineAddition.productQuery,
+      catalogName: null,
+      productUpdate: null,
+      quantity: orderLineAddition.quantity,
+      orderLines: [orderLineAddition],
+      wantsInvoice: false,
+      analytics: null,
+      confidence: 0.92
+    };
+  }
+
+  if (orderLineQuantityUpdate) {
+    return {
+      intent: "set_order_item_quantity",
+      customerQuery: null,
+      productQuery: orderLineQuantityUpdate.productQuery,
+      catalogName: null,
+      productUpdate: null,
+      quantity: orderLineQuantityUpdate.quantity,
+      orderLines: [orderLineQuantityUpdate],
+      wantsInvoice: false,
+      analytics: null,
+      confidence: 0.92
+    };
+  }
+
+  if (orderLineRemoval) {
+    return {
+      intent: "remove_item_from_order",
+      customerQuery: null,
+      productQuery: orderLineRemoval.productQuery,
+      catalogName: null,
+      productUpdate: null,
+      quantity: 0,
+      orderLines: [orderLineRemoval],
+      wantsInvoice: false,
+      analytics: null,
+      confidence: 0.92
     };
   }
 
@@ -216,30 +318,18 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
   if (asksAnalytics) {
     return {
       intent: "analytics_query",
-      customerQuery: normalized.includes("globo")
-        ? "globo"
-        : normalized.includes("legacy")
-          ? "legacy"
-          : normalized.includes("northstar")
-            ? "northstar"
-            : null,
+      customerQuery: analytics.customerQuery,
       productQuery: analyticsProductQueries.length > 1
         ? null
-        : normalized.includes("monitor")
-          ? "monitor"
-          : normalized.includes("teclado")
-            ? "teclado"
-            : normalized.includes("notebook")
-              ? "notebook"
-              : null,
+        : analyticsProductQueries[0] ?? null,
       catalogName: null,
       productUpdate: null,
       quantity: null,
       wantsInvoice: false,
       analytics: {
-        metric: analyticsMetric,
-        groupBy: analyticsGroupBy,
-        dateRange,
+        metric: analytics.metric,
+        groupBy: analytics.groupBy,
+        dateRange: analytics.dateRange,
         productQueries: analyticsProductQueries.length ? analyticsProductQueries : null
       },
       confidence: 0.82
@@ -320,44 +410,10 @@ export function parseIntentLocally(message: string | null | undefined): AgentInt
   };
 }
 
-function inferAnalyticsMetric(normalized: string) {
-  if (/\b(pedidos|pedido)\b/.test(normalized) && /\b(quantos|quantidade|total)\b/.test(normalized)) {
-    return "order_count" as const;
-  }
-  if (/\b(faturamento|receita|valor|quanto)\b/.test(normalized) && !/\bquantos\b/.test(normalized)) {
-    return "revenue" as const;
-  }
-  if (/\bcomprou|compraram\b/.test(normalized) && /\bfaturamento|receita|valor\b/.test(normalized)) {
-    return "revenue" as const;
-  }
-  return "units_sold" as const;
-}
-
-function inferAnalyticsGroupBy(normalized: string) {
-  if (/\b(compare|comparar|comparativo|versus|vs\.?|contra|entre)\b/.test(normalized)) {
-    return "product" as const;
-  }
-  if (/\bpor\s+cliente\b|\bclientes\b|\bquais\s+clientes\b/.test(normalized)) {
-    return "customer" as const;
-  }
-  if (/\bpor\s+produto\b|\bprodutos\b|\branking\b|\bmais\s+(venderam|vendeu|sairam|saiu)\b|\bo\s+que\s+mais\s+saiu\b/.test(normalized)) {
-    return "product" as const;
-  }
-  if (/\bpor\s+dia\b|\bdia\s+a\s+dia\b/.test(normalized)) {
-    return "day" as const;
-  }
-  return null;
-}
-
 function inferProductQueries(normalized: string) {
-  const products = [
-    /\bmonitores?\b/.test(normalized) ? "monitor" : null,
-    /\bnotebooks?\b/.test(normalized) ? "notebook" : null,
-    /\bteclados?\b/.test(normalized) ? "teclado" : null
-  ].filter((product): product is string => Boolean(product));
-
+  const products = inferEntityProductQueries(normalized);
   if (!/\b(compare|comparar|comparativo|versus|vs\.?|contra|entre)\b/.test(normalized) && products.length < 2) {
-    return [];
+    return products.length === 1 ? products : [];
   }
   return products;
 }

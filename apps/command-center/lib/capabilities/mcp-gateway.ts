@@ -36,6 +36,9 @@ const supplierTools = new Set(["create_supplier"]);
 const salesOrderTools = new Set([
   "prepare_sales_order",
   "create_sales_order",
+  "add_sales_order_line",
+  "set_sales_order_line_quantity",
+  "remove_sales_order_line",
   "get_sales_order",
   "list_recent_orders"
 ]);
@@ -271,6 +274,29 @@ export class McpCapabilityGateway implements CapabilityGateway {
     confirmedByUser: true;
   }) {
     return callTool("create_sales_order", input, SalesOrderSchema);
+  }
+
+  async addSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }) {
+    return callTool("add_sales_order_line", input, SalesOrderSchema);
+  }
+
+  async setSalesOrderLineQuantity(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }) {
+    return callTool("set_sales_order_line_quantity", input, SalesOrderSchema);
+  }
+
+  async removeSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+  }) {
+    return callTool("remove_sales_order_line", input, SalesOrderSchema);
   }
 
   async createConceptInvoice(input: { salesOrderId: string }) {

@@ -52,6 +52,35 @@ export function registerSalesOrderTools(server: McpServer, gateway: CapabilityGa
     async (input) => json(await gateway.createSalesOrder(input))
   );
 
+  server.tool(
+    "add_sales_order_line",
+    {
+      salesOrderId: z.string(),
+      productId: z.string(),
+      quantity: z.number().int().positive()
+    },
+    async (input) => json(await gateway.addSalesOrderLine(input))
+  );
+
+  server.tool(
+    "set_sales_order_line_quantity",
+    {
+      salesOrderId: z.string(),
+      productId: z.string(),
+      quantity: z.number().int().nonnegative()
+    },
+    async (input) => json(await gateway.setSalesOrderLineQuantity(input))
+  );
+
+  server.tool(
+    "remove_sales_order_line",
+    {
+      salesOrderId: z.string(),
+      productId: z.string()
+    },
+    async (input) => json(await gateway.removeSalesOrderLine(input))
+  );
+
   server.tool("get_sales_order", { salesOrderId: z.string() }, async (input) =>
     json(await gateway.getSalesOrder(input))
   );

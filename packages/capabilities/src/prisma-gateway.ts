@@ -501,6 +501,229 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return mapSalesOrder(order);
   }
 
+  async addSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }) {
+    await ensureSeeded();
+    const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      const existingOrder = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: input.salesOrderId },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+      const product = (await tx.product.findUniqueOrThrow({
+        where: { id: input.productId }
+      })) as DbProduct;
+      if (product.availableStock < input.quantity) {
+        throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+      }
+
+      const currentLine = existingOrder.lines.find((line) => line.productId === product.id);
+      if (currentLine) {
+        const nextQuantity = currentLine.quantity + input.quantity;
+        await tx.salesOrderLine.update({
+          where: { id: currentLine.id },
+          data: {
+            quantity: nextQuantity,
+            unitPriceCents: product.unitPriceCents,
+            totalCents: product.unitPriceCents * nextQuantity
+          }
+        });
+      } else {
+        await tx.salesOrderLine.create({
+          data: {
+            salesOrderId: existingOrder.id,
+            productId: product.id,
+            quantity: input.quantity,
+            unitPriceCents: product.unitPriceCents,
+            totalCents: product.unitPriceCents * input.quantity
+          }
+        });
+      }
+
+      await tx.product.update({
+        where: { id: product.id },
+        data: {
+          availableStock: {
+            decrement: input.quantity
+          }
+        }
+      });
+
+      return tx.salesOrder.findUniqueOrThrow({
+        where: { id: existingOrder.id },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+    });
+
+    await audit("add_sales_order_line", `Added item to sales order ${order.id}`, {
+      salesOrderId: order.id,
+      productId: input.productId,
+      quantity: input.quantity
+    });
+    return mapSalesOrder(order);
+  }
+
+  async setSalesOrderLineQuantity(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }) {
+    await ensureSeeded();
+    const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      const existingOrder = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: input.salesOrderId },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+      const currentLine = existingOrder.lines.find((line) => line.productId === input.productId);
+      if (!currentLine) {
+        throw new Error(`Product ${input.productId} is not in sales order ${input.salesOrderId}.`);
+      }
+      if (input.quantity === 0 && existingOrder.lines.length === 1) {
+        throw new Error(`Sales order ${input.salesOrderId} must keep at least one item.`);
+      }
+
+      const delta = input.quantity - currentLine.quantity;
+      if (delta > 0) {
+        const product = (await tx.product.findUniqueOrThrow({
+          where: { id: input.productId }
+        })) as DbProduct;
+        if (product.availableStock < delta) {
+          throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+        }
+        await tx.product.update({
+          where: { id: product.id },
+          data: {
+            availableStock: {
+              decrement: delta
+            }
+          }
+        });
+      } else if (delta < 0) {
+        await tx.product.update({
+          where: { id: input.productId },
+          data: {
+            availableStock: {
+              increment: Math.abs(delta)
+            }
+          }
+        });
+      }
+
+      if (input.quantity === 0) {
+        await tx.salesOrderLine.delete({
+          where: { id: currentLine.id }
+        });
+      } else {
+        await tx.salesOrderLine.update({
+          where: { id: currentLine.id },
+          data: {
+            quantity: input.quantity,
+            totalCents: currentLine.unitPriceCents * input.quantity
+          }
+        });
+      }
+
+      return tx.salesOrder.findUniqueOrThrow({
+        where: { id: existingOrder.id },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+    });
+
+    await audit("set_sales_order_line_quantity", `Set item quantity in sales order ${order.id}`, {
+      salesOrderId: order.id,
+      productId: input.productId,
+      quantity: input.quantity
+    });
+    return mapSalesOrder(order);
+  }
+
+  async removeSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+  }) {
+    await ensureSeeded();
+    const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      const existingOrder = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: input.salesOrderId },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+      const currentLine = existingOrder.lines.find((line) => line.productId === input.productId);
+      if (!currentLine) {
+        throw new Error(`Product ${input.productId} is not in sales order ${input.salesOrderId}.`);
+      }
+      if (existingOrder.lines.length === 1) {
+        throw new Error(`Sales order ${input.salesOrderId} must keep at least one item.`);
+      }
+
+      await tx.salesOrderLine.delete({
+        where: { id: currentLine.id }
+      });
+      await tx.product.update({
+        where: { id: input.productId },
+        data: {
+          availableStock: {
+            increment: currentLine.quantity
+          }
+        }
+      });
+
+      return tx.salesOrder.findUniqueOrThrow({
+        where: { id: existingOrder.id },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+    });
+
+    await audit("remove_sales_order_line", `Removed item from sales order ${order.id}`, {
+      salesOrderId: order.id,
+      productId: input.productId
+    });
+    return mapSalesOrder(order);
+  }
+
   async createConceptInvoice(input: { salesOrderId: string }) {
     await ensureSeeded();
     const invoice = await prisma.$transaction(async (tx: PrismaTransaction) => {

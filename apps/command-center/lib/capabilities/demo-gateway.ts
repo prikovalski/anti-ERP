@@ -213,6 +213,110 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return order;
   }
 
+  async addSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }) {
+    const order = salesOrders.get(input.salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    const product = this.products.find((candidate) => candidate.id === input.productId);
+    if (!product) {
+      throw new Error(`Product ${input.productId} not found.`);
+    }
+    if (product.availableStock < input.quantity) {
+      throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+    }
+
+    const currentLine = order.lines.find((line) => line.productId === product.id);
+    if (currentLine) {
+      currentLine.quantity += input.quantity;
+      currentLine.unitPrice = product.unitPrice;
+      currentLine.total = currentLine.quantity * product.unitPrice;
+    } else {
+      order.lines.push({
+        productId: product.id,
+        sku: product.sku,
+        name: product.name,
+        quantity: input.quantity,
+        unitPrice: product.unitPrice,
+        total: input.quantity * product.unitPrice
+      });
+    }
+    product.availableStock -= input.quantity;
+    order.subtotal = order.lines.reduce((sum, line) => sum + line.total, 0);
+    salesOrders.set(order.id, order);
+    return order;
+  }
+
+  async setSalesOrderLineQuantity(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }) {
+    const order = salesOrders.get(input.salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    const product = this.products.find((candidate) => candidate.id === input.productId);
+    if (!product) {
+      throw new Error(`Product ${input.productId} not found.`);
+    }
+    const currentLine = order.lines.find((line) => line.productId === product.id);
+    if (!currentLine) {
+      throw new Error(`Product ${input.productId} is not in sales order ${input.salesOrderId}.`);
+    }
+    if (input.quantity === 0 && order.lines.length === 1) {
+      throw new Error(`Sales order ${input.salesOrderId} must keep at least one item.`);
+    }
+
+    const delta = input.quantity - currentLine.quantity;
+    if (delta > 0 && product.availableStock < delta) {
+      throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+    }
+    product.availableStock -= delta;
+
+    if (input.quantity === 0) {
+      order.lines = order.lines.filter((line) => line.productId !== product.id);
+    } else {
+      currentLine.quantity = input.quantity;
+      currentLine.unitPrice = product.unitPrice;
+      currentLine.total = input.quantity * product.unitPrice;
+    }
+    order.subtotal = order.lines.reduce((sum, line) => sum + line.total, 0);
+    salesOrders.set(order.id, order);
+    return order;
+  }
+
+  async removeSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+  }) {
+    const order = salesOrders.get(input.salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    const product = this.products.find((candidate) => candidate.id === input.productId);
+    if (!product) {
+      throw new Error(`Product ${input.productId} not found.`);
+    }
+    const currentLine = order.lines.find((line) => line.productId === product.id);
+    if (!currentLine) {
+      throw new Error(`Product ${input.productId} is not in sales order ${input.salesOrderId}.`);
+    }
+    if (order.lines.length === 1) {
+      throw new Error(`Sales order ${input.salesOrderId} must keep at least one item.`);
+    }
+
+    product.availableStock += currentLine.quantity;
+    order.lines = order.lines.filter((line) => line.productId !== product.id);
+    order.subtotal = order.lines.reduce((sum, line) => sum + line.total, 0);
+    salesOrders.set(order.id, order);
+    return order;
+  }
+
   async createConceptInvoice(input: { salesOrderId: string }) {
     const order = salesOrders.get(input.salesOrderId);
     if (!order) {

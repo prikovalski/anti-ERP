@@ -37,6 +37,20 @@ export interface CapabilityGateway {
     preview: SalesOrderPreview;
     confirmedByUser: true;
   }): Promise<SalesOrder>;
+  addSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }): Promise<SalesOrder>;
+  setSalesOrderLineQuantity(input: {
+    salesOrderId: string;
+    productId: string;
+    quantity: number;
+  }): Promise<SalesOrder>;
+  removeSalesOrderLine(input: {
+    salesOrderId: string;
+    productId: string;
+  }): Promise<SalesOrder>;
   createConceptInvoice(input: { salesOrderId: string }): Promise<ConceptInvoice>;
   getSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder | null>;
   listRecentOrders(): Promise<SalesOrder[]>;

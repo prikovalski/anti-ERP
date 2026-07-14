@@ -1,5 +1,6 @@
 import { AgentConfirmRequestSchema, AgentResponseSchema } from "@anti-erp/shared";
 import { NextResponse } from "next/server";
+import { evolveContextFromPreviewConfirmation } from "@/lib/agent/conversation-context";
 import { confirmSalesOrder } from "@/lib/agent/sales-order-confirmation";
 import { getCapabilityGateway } from "@/lib/capabilities";
 import { recordAgentStep, withMcpTrace } from "@/lib/observability/mcp-trace";
@@ -33,7 +34,8 @@ export async function POST(request: Request) {
         inputs: {
           customerId: body.preview.customer.id,
           lineCount: body.preview.lines.length,
-          createInvoice: body.createInvoice
+          createInvoice: body.createInvoice,
+          hasConversationContext: Boolean(body.conversationContext)
         },
         tags: ["confirmation"]
       },
@@ -51,7 +53,15 @@ export async function POST(request: Request) {
         return confirmSalesOrder(await getCapabilityGateway(), body.preview, body.createInvoice);
       }
     );
-    return NextResponse.json(AgentResponseSchema.parse({ ...response, mcpTrace: trace }));
+    return NextResponse.json(AgentResponseSchema.parse({
+      ...response,
+      mcpTrace: trace,
+      conversationContext: evolveContextFromPreviewConfirmation({
+        current: body.conversationContext,
+        preview: body.preview,
+        response
+      })
+    }));
   } catch (error) {
     console.error("Confirmation capability gateway failed. Returning controlled error.", error);
     return capabilityFailureResponse();

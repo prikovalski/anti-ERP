@@ -5,6 +5,8 @@ import type {
   AnalyticsResult,
   AuditEvent,
   ConceptInvoice,
+  ConversationContext,
+  ExecutionPlan,
   SalesOrder,
   SalesOrderPreview
 } from "@anti-erp/shared";
@@ -13,15 +15,10 @@ import {
   AlertTriangle,
   Bot,
   Check,
-  CircleDollarSign,
-  Clock3,
   FileText,
-  GitBranch,
-  PackageCheck,
   ReceiptText,
   Send,
-  Sparkles,
-  UserCheck
+  Sparkles
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -37,6 +34,23 @@ type ApiErrorResponse = {
 };
 
 type McpTrace = NonNullable<AgentResponse["mcpTrace"]>;
+
+type DocumentMessage = {
+  id: string;
+  text: string;
+  title: string;
+};
+
+const emptyConversationContext: ConversationContext = {
+  activeOrderId: null,
+  activeInvoiceId: null,
+  activeCustomer: null,
+  activeProducts: [],
+  lastDocumentType: null,
+  pendingConfirmation: "none",
+  lastUserCommand: null,
+  lastAgentSummary: null
+};
 
 function createAudit(action: string, summary: string, actor: AuditEvent["actor"] = "mcp-tool"): AuditEvent {
   return {
@@ -55,16 +69,31 @@ function money(value: number) {
   }).format(value);
 }
 
-function formatAnalyticsValue(result: AnalyticsResult) {
-  return result.metric === "revenue" ? money(result.value) : String(result.value);
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(new Date(value));
 }
 
-function formatAnalyticsRowValue(result: AnalyticsResult, value: number) {
+function formatAnalyticsValue(result: AnalyticsResult, value = result.value) {
   return result.metric === "revenue" ? money(value) : String(value);
 }
 
-function formatAnalyticsGroupBy(result: AnalyticsResult) {
-  return result.query.groupBy ? result.query.groupBy : "none";
+function formatPlanStatus(status: ExecutionPlan["steps"][number]["status"]) {
+  if (status === "executed") {
+    return "Executada";
+  }
+  if (status === "pending_confirmation") {
+    return "Pendente";
+  }
+  if (status === "blocked") {
+    return "Bloqueada";
+  }
+  if (status === "skipped") {
+    return "Ignorada";
+  }
+  return "Planejada";
 }
 
 export default function CommandCenterPage() {
@@ -73,14 +102,17 @@ export default function CommandCenterPage() {
     {
       id: "welcome",
       role: "agent",
-      text: "Como posso ajudar? Diga a intenção de negócio; eu transformo isso em capacidades MCP auditáveis."
+      text: "Diga o que deseja fazer em linguagem natural. Eu transformo em acoes MCP auditaveis."
     }
   ]);
   const [preview, setPreview] = useState<SalesOrderPreview | null>(null);
   const [order, setOrder] = useState<SalesOrder | null>(null);
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
   const [analyticsResult, setAnalyticsResult] = useState<AnalyticsResult | null>(null);
+  const [executionPlan, setExecutionPlan] = useState<ExecutionPlan | null>(null);
+  const [documentMessage, setDocumentMessage] = useState<DocumentMessage | null>(null);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
+  const [conversationContext, setConversationContext] = useState<ConversationContext>(emptyConversationContext);
   const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("langgraph");
   const [mcpTrace, setMcpTrace] = useState<McpTrace>([]);
   const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
@@ -95,26 +127,33 @@ export default function CommandCenterPage() {
       "Crie o pedido e a NF para Globo com 1 monitor e 1 teclado",
       "Cadastre o cliente Atlas Retail",
       "Cadastre o produto Mouse",
-      "Cadastre o fornecedor Delta Supplies",
-      "Atualize o preço do produto Mouse para 50 reais",
-      "Quantos monitores foram vendidos hoje?",
-      "Quanto vendemos hoje?",
-      "Qual cliente comprou mais este mês?",
-      "Quanto vendemos por produto?",
-      "Gere uma nota para o último pedido",
-      "Explique como isso seria feito em um ERP tradicional"
+      "Atualize o preco do produto Mouse para 50 reais",
+      "Quais produtos estao com estoque baixo?",
+      "Quais produtos mais venderam hoje?",
+      "Compare o faturamento de notebooks e monitores hoje"
     ],
     []
   );
 
   function applyAgentResponse(response: AgentResponse) {
-    setMessages((current) => [...current, response.message]);
+    if (isAgentQuestion(response.message.text)) {
+      setMessages((current) => [...current, response.message]);
+      setDocumentMessage(null);
+    } else {
+      setDocumentMessage({
+        id: response.message.id,
+        title: inferDocumentTitle(response),
+        text: response.message.text
+      });
+    }
     setAgentMode(response.mode);
     setPreview(response.preview ?? null);
     setOrder(response.order ?? order);
     setInvoice(response.invoice ?? invoice);
     setAnalyticsResult(response.analyticsResult ?? null);
+    setExecutionPlan(response.executionPlan ?? null);
     setLastOrderId(response.lastOrderId ?? lastOrderId);
+    setConversationContext(response.conversationContext ?? conversationContext);
     setMcpTrace(response.mcpTrace ?? []);
     setAudit((current) => [...response.auditEvents, ...current]);
   }
@@ -138,10 +177,12 @@ export default function CommandCenterPage() {
       { id: `user_${Date.now()}`, role: "user", text: command }
     ]);
     setPending(true);
-    setCreateInvoiceAfterConfirm(/\b(nota|invoice|fatura)\b/i.test(command));
+    setCreateInvoiceAfterConfirm(/\b(nota|nf|invoice|fatura)\b/i.test(command));
     setOrder(null);
     setInvoice(null);
     setAnalyticsResult(null);
+    setExecutionPlan(null);
+    setDocumentMessage(null);
     setMcpTrace([]);
     setInput("");
 
@@ -153,7 +194,8 @@ export default function CommandCenterPage() {
         },
         body: JSON.stringify({
           message: command,
-          lastOrderId: lastOrderId ?? undefined
+          lastOrderId: lastOrderId ?? conversationContext.activeOrderId ?? undefined,
+          conversationContext
         })
       });
 
@@ -170,7 +212,7 @@ export default function CommandCenterPage() {
           role: "agent",
           text: error instanceof Error
             ? error.message
-            : "Nao consegui processar esse comando agora. A demo continua segura: nenhuma escrita foi executada."
+            : "Nao consegui processar esse comando agora. Nenhuma escrita foi executada."
         }
       ]);
       setAudit((current) => [
@@ -196,7 +238,8 @@ export default function CommandCenterPage() {
         },
         body: JSON.stringify({
           preview,
-          createInvoice: createInvoiceAfterConfirm
+          createInvoice: createInvoiceAfterConfirm,
+          conversationContext
         })
       });
 
@@ -230,382 +273,574 @@ export default function CommandCenterPage() {
     }
   }
 
-  const confirmationBlocked = Boolean(preview?.warnings.length);
-
   return (
-    <main className="min-h-screen bg-paper text-ink">
-      <section className="border-b border-line bg-[linear-gradient(120deg,#f7f5ef_0%,#ffffff_48%,#eef6f3_100%)]">
-        <div className="mx-auto grid min-h-[92vh] w-full max-w-7xl grid-cols-1 gap-6 px-4 py-5 sm:px-6 lg:grid-cols-[1.1fr_0.9fr] lg:px-8">
-          <div className="flex min-h-[680px] flex-col rounded-lg border border-line bg-white shadow-panel">
-            <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
-              <div>
-                <p className="text-sm font-semibold text-signal">anti-ERP</p>
-                <h1 className="text-2xl font-semibold text-ink sm:text-4xl">
-                  The first MCP-native AI ERP experiment.
-                </h1>
-              </div>
-              <div className="flex items-center gap-2 rounded-full border border-line px-3 py-2 text-sm text-steel">
-                <Sparkles className="h-4 w-4" aria-hidden="true" />
-                {agentMode === "openrouter" ? "OpenRouter assisted" : "LangGraph mode"}
-              </div>
-            </header>
-
-            <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
-              <blockquote className="border-l-4 border-coral pl-4 text-xl font-medium text-ink">
-                You shouldn't learn an ERP. Your ERP should understand your intent.
-              </blockquote>
-
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`max-w-[86%] rounded-lg border px-4 py-3 text-sm leading-6 ${
-                    message.role === "user"
-                      ? "ml-auto border-signal bg-[#e9f6f3]"
-                      : "border-line bg-[#fbfaf7]"
-                  }`}
-                >
-                  <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase text-steel">
-                    {message.role === "agent" ? <Bot className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-                    {message.role === "agent" ? "Agent" : "User"}
-                  </div>
-                  {message.text}
-                </div>
-              ))}
-
-              <AgentPlan audit={audit} pending={pending} preview={preview} order={order} invoice={invoice} />
-
-              {preview ? (
-                <div className="rounded-lg border border-signal bg-white p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-semibold text-signal">Confirmation card</p>
-                      <h2 className="mt-1 text-xl font-semibold">Create sales order for {preview.customer.name}</h2>
-                      <p className="mt-1 text-sm text-steel">
-                        This is a preview. The agent cannot write to the system before your confirmation.
-                      </p>
-                    </div>
-                    <button
-                      className="inline-flex min-h-11 items-center gap-2 rounded-md bg-signal px-4 py-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-                      onClick={confirmPreview}
-                      disabled={pending || confirmationBlocked}
-                      title="Confirm and create order"
-                    >
-                      <Check className="h-5 w-5" aria-hidden="true" />
-                      Confirm
-                    </button>
-                  </div>
-
-                  {preview.warnings.length > 0 ? (
-                    <div className="mt-4 rounded-md border border-coral bg-[#fff3ef] p-3 text-sm text-ink">
-                      <div className="flex items-center gap-2 font-semibold text-coral">
-                        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-                        Confirmation blocked
-                      </div>
-                      <ul className="mt-2 space-y-1">
-                        {preview.warnings.map((warning) => (
-                          <li key={warning}>{warning}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
-                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                    <Metric label="Customer" value={preview.customer.name} />
-                    <Metric label="Tax ID" value={preview.customer.taxId} />
-                    <Metric label="City" value={preview.customer.city} />
-                  </div>
-
-                  <div className="mt-4 overflow-hidden rounded-md border border-line">
-                    <div className="grid grid-cols-[1fr_0.55fr_0.7fr_0.7fr] bg-[#fbfaf7] px-3 py-2 text-xs font-semibold uppercase text-steel">
-                      <span>Item</span>
-                      <span>Qty</span>
-                      <span>Unit</span>
-                      <span>Total</span>
-                    </div>
-                    {preview.lines.map((line) => (
-                      <div
-                        key={`${line.productId}-${line.quantity}`}
-                        className="grid grid-cols-[1fr_0.55fr_0.7fr_0.7fr] border-t border-line px-3 py-3 text-sm"
-                      >
-                        <div>
-                          <p className="font-semibold text-ink">{line.name}</p>
-                          <p className="text-xs text-steel">{line.sku}</p>
-                        </div>
-                        <span>{line.quantity}</span>
-                        <span>{money(line.unitPrice)}</span>
-                        <span className="font-semibold">{money(line.total)}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                    <label className="flex items-center gap-2 text-sm text-ink">
-                      <input
-                        checked={createInvoiceAfterConfirm}
-                        className="h-4 w-4 accent-signal"
-                        onChange={(event) => setCreateInvoiceAfterConfirm(event.target.checked)}
-                        type="checkbox"
-                      />
-                      Generate concept invoice after confirmation
-                    </label>
-                    <Metric label="Subtotal" value={money(preview.subtotal)} />
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="border-t border-line p-4">
-              <div className="mb-3 flex flex-wrap gap-2">
-                {suggestions.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    className="rounded-md border border-line bg-white px-3 py-2 text-left text-sm text-steel hover:border-signal hover:text-ink"
-                    onClick={() => setInput(suggestion)}
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
-              <form
-                className="flex gap-3"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  runIntent(input);
-                }}
-              >
-                <textarea
-                  className="min-h-16 flex-1 resize-none rounded-lg border border-line bg-white px-4 py-3 text-base"
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  aria-label="Business command"
-                />
-                <button
-                  className="inline-flex min-h-16 w-16 items-center justify-center rounded-lg bg-ink text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  type="submit"
-                  disabled={pending}
-                  title="Send command"
-                >
-                  <Send className="h-6 w-6" aria-hidden="true" />
-                </button>
-              </form>
-            </div>
+    <main className="anti-erp-shell">
+      <aside className="chat-column">
+        <div className="chat-brand">
+          <div>
+            <p className="eyebrow">anti-ERP</p>
+            <h1>Command Center</h1>
           </div>
-
-          <aside className="grid gap-6">
-            <section className="rounded-lg border border-line bg-white p-5 shadow-panel">
-              <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-steel">
-                <GitBranch className="h-4 w-4" aria-hidden="true" />
-                MCP-native architecture
-              </div>
-              <div className="grid gap-2 text-sm">
-                {[
-                  "Command Center",
-                  "Agent",
-                  "MCP Client",
-                  "Customers MCP",
-                  "Products MCP",
-                  "Suppliers MCP",
-                  "Sales Orders MCP",
-                  "Invoices MCP",
-                  "Analytics MCP",
-                  "Database"
-                ].map((step) => (
-                  <div key={step} className="rounded-md border border-line px-3 py-2">
-                    {step}
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="rounded-lg border border-line bg-white p-5 shadow-panel">
-              <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-steel">
-                <CircleDollarSign className="h-4 w-4" aria-hidden="true" />
-                Result
-              </div>
-              {order ? (
-                <div className="space-y-3 text-sm">
-                  <Metric label="Sales order" value={order.id} />
-                  <Metric label="Concept invoice" value={invoice?.id ?? "Not generated"} />
-                  <Metric label="Amount" value={money(invoice?.amount ?? order.subtotal)} />
-                </div>
-              ) : analyticsResult ? (
-                <div className="space-y-3 text-sm">
-                  <Metric label={analyticsResult.label} value={formatAnalyticsValue(analyticsResult)} />
-                  <div className="rounded-md border border-line bg-[#fbfaf7] px-3 py-3">
-                    <p className="text-xs font-semibold uppercase text-steel">Interpreted query</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <span className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
-                        {analyticsResult.query.capability}
-                      </span>
-                      <span className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
-                        source: {analyticsResult.query.dataSource}
-                      </span>
-                      <span className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
-                        group: {formatAnalyticsGroupBy(analyticsResult)}
-                      </span>
-                      {analyticsResult.query.filters.map((filter) => (
-                        <span key={`${filter.label}-${filter.value}`} className="rounded-full border border-line bg-white px-2 py-1 text-xs text-steel">
-                          {filter.label}: {filter.value}
-                        </span>
-                      ))}
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-steel">
-                      Entities: {analyticsResult.query.entities.join(", ")}
-                    </p>
-                  </div>
-                  {analyticsResult.rows.length > 0 ? (
-                    <div className="overflow-hidden rounded-md border border-line">
-                      {analyticsResult.rows.map((row) => (
-                        <div
-                          key={row.label}
-                          className="flex items-center justify-between gap-3 border-t border-line px-3 py-2 first:border-t-0"
-                        >
-                          <span className="text-steel">{row.label}</span>
-                          <span className="font-semibold text-ink">{formatAnalyticsRowValue(analyticsResult, row.value)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <p className="text-sm leading-6 text-steel">A confirmed order, concept invoice, or sales metric will appear here.</p>
-              )}
-            </section>
-
-            <ExecutionTrace trace={mcpTrace} />
-
-            <section className="rounded-lg border border-line bg-white p-5 shadow-panel">
-              <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-steel">
-                <Clock3 className="h-4 w-4" aria-hidden="true" />
-                Audit timeline
-              </div>
-              <div className="space-y-3">
-                {audit.map((event) => (
-                  <div key={event.id} className="border-l-2 border-signal pl-3">
-                    <div className="flex items-center gap-2 text-xs font-semibold uppercase text-steel">
-                      <FileText className="h-3.5 w-3.5" aria-hidden="true" />
-                      {event.action}
-                    </div>
-                    <p className="mt-1 text-sm text-ink">{event.summary}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </aside>
+          <span className="mode-pill">
+            <Sparkles size={15} />
+            {agentMode === "openrouter" ? "OpenRouter" : "LangGraph"}
+          </span>
         </div>
+
+        <div className="chat-messages" aria-live="polite">
+          {messages.map((message) => (
+            <div key={message.id} className={`chat-bubble ${message.role}`}>
+              <div className="bubble-role">
+                {message.role === "agent" ? <Bot size={14} /> : <Send size={14} />}
+                {message.role === "agent" ? "Agente" : "Voce"}
+              </div>
+              <p>{message.text}</p>
+            </div>
+          ))}
+          {pending ? (
+            <div className="chat-bubble agent">
+              <div className="bubble-role">
+                <Bot size={14} />
+                Agente
+              </div>
+              <p>Processando...</p>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="suggestion-list">
+          {suggestions.map((suggestion) => (
+            <button key={suggestion} type="button" onClick={() => setInput(suggestion)}>
+              {suggestion}
+            </button>
+          ))}
+        </div>
+
+        <form
+          className="chat-input"
+          onSubmit={(event) => {
+            event.preventDefault();
+            runIntent(input);
+          }}
+        >
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            aria-label="Comando de negocio"
+            placeholder="Digite um comando, ex: crie um pedido para a Northstar de 10 notebooks"
+          />
+          <button type="submit" disabled={pending} title="Enviar comando">
+            <Send size={20} />
+          </button>
+        </form>
+      </aside>
+
+      <section className="document-column">
+        <div className="workspace-header">
+          <div>
+            <p className="eyebrow dark">workspace</p>
+            <h2>Documentos e resultados</h2>
+          </div>
+          <TraceSummary trace={mcpTrace} />
+        </div>
+
+        <DocumentWorkspace
+          analyticsResult={analyticsResult}
+          audit={audit}
+          conversationContext={conversationContext}
+          createInvoiceAfterConfirm={createInvoiceAfterConfirm}
+          documentMessage={documentMessage}
+          executionPlan={executionPlan}
+          invoice={invoice}
+          mcpTrace={mcpTrace}
+          order={order}
+          pending={pending}
+          preview={preview}
+          setCreateInvoiceAfterConfirm={setCreateInvoiceAfterConfirm}
+          onConfirmPreview={confirmPreview}
+        />
       </section>
     </main>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function DocumentWorkspace({
+  analyticsResult,
+  audit,
+  conversationContext,
+  createInvoiceAfterConfirm,
+  documentMessage,
+  executionPlan,
+  invoice,
+  mcpTrace,
+  order,
+  pending,
+  preview,
+  setCreateInvoiceAfterConfirm,
+  onConfirmPreview
+}: {
+  analyticsResult: AnalyticsResult | null;
+  audit: AuditEvent[];
+  conversationContext: ConversationContext;
+  createInvoiceAfterConfirm: boolean;
+  documentMessage: DocumentMessage | null;
+  executionPlan: ExecutionPlan | null;
+  invoice: ConceptInvoice | null;
+  mcpTrace: McpTrace;
+  order: SalesOrder | null;
+  pending: boolean;
+  preview: SalesOrderPreview | null;
+  setCreateInvoiceAfterConfirm: (value: boolean) => void;
+  onConfirmPreview: () => void;
+}) {
+  const hasDocument = Boolean(preview || order || invoice || analyticsResult || executionPlan || documentMessage);
+  const showGenericDocument = Boolean(documentMessage && !preview && !order && !invoice && !analyticsResult && !executionPlan);
+
   return (
-    <div className="rounded-md border border-line bg-[#fbfaf7] px-3 py-3">
-      <p className="text-xs font-semibold uppercase text-steel">{label}</p>
-      <p className="mt-1 break-words text-base font-semibold text-ink">{value}</p>
+    <div className="document-scroll">
+      {!hasDocument ? <EmptyDocument /> : null}
+      {showGenericDocument && documentMessage ? <GenericResultDocument document={documentMessage} /> : null}
+      {executionPlan ? <ExecutionPlanDocument plan={executionPlan} /> : null}
+      {preview ? (
+        <SalesOrderDocument
+          createInvoiceAfterConfirm={createInvoiceAfterConfirm}
+          pending={pending}
+          preview={preview}
+          setCreateInvoiceAfterConfirm={setCreateInvoiceAfterConfirm}
+          onConfirmPreview={onConfirmPreview}
+        />
+      ) : null}
+      {order ? <ConfirmedOrderDocument invoice={invoice} order={order} /> : null}
+      {analyticsResult ? <ReportDocument result={analyticsResult} /> : null}
+      <OperationalFooter audit={audit} conversationContext={conversationContext} trace={mcpTrace} />
     </div>
   );
 }
 
-function ExecutionTrace({ trace }: { trace: McpTrace }) {
+function EmptyDocument() {
   return (
-    <section className="rounded-lg border border-line bg-white p-5 shadow-panel">
-      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-steel">
-        <Activity className="h-4 w-4" aria-hidden="true" />
-        Execution trace
-      </div>
-      {trace.length > 0 ? (
-        <div className="space-y-2">
-          {trace.map((entry) => (
-            <div key={entry.id} className="rounded-md border border-line bg-[#fbfaf7] px-3 py-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-ink">
-                  {entry.role}.{entry.tool}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                    entry.status === "success" ? "bg-[#e9f6f3] text-signal" : "bg-[#fff3ef] text-coral"
-                  }`}
-                >
-                  {entry.status} · {entry.durationMs}ms
-                </span>
-              </div>
-              {entry.error ? (
-                <p className="mt-2 text-xs leading-5 text-coral">{entry.error}</p>
-              ) : null}
+    <div className="empty-document">
+      <FileText size={44} />
+      <h3>Nenhum documento aberto</h3>
+      <p>
+        Envie um comando no chat. Pedidos, notas fiscais conceituais, cadastros e relatorios
+        aparecem aqui em formato de documento.
+      </p>
+    </div>
+  );
+}
+
+function GenericResultDocument({ document }: { document: DocumentMessage }) {
+  const items = extractResultItems(document.text);
+
+  return (
+    <article className="document-card result-document">
+      <DocumentTitle
+        icon={<FileText size={20} />}
+        kicker="Resultado"
+        title={document.title}
+        status="Concluido"
+      />
+      <p className="result-summary">{getResultSummary(document.text)}</p>
+      {items.length > 0 ? (
+        <div className="result-list">
+          {items.map((item) => (
+            <div key={item}>
+              <span>{item}</span>
             </div>
           ))}
         </div>
-      ) : (
-        <p className="text-sm leading-6 text-steel">MCP calls from the latest command will appear here.</p>
-      )}
-    </section>
+      ) : null}
+    </article>
   );
 }
 
-function AgentPlan({
-  audit,
+function ExecutionPlanDocument({ plan }: { plan: ExecutionPlan }) {
+  return (
+    <article className="document-card plan-document">
+      <DocumentTitle
+        icon={<Sparkles size={20} />}
+        kicker="Plano"
+        title="Execucao planejada"
+        status={`${plan.steps.length} etapa(s)`}
+      />
+      <p className="result-summary">{plan.summary}</p>
+      <div className="plan-step-list">
+        {plan.steps.map((step, index) => (
+          <div key={step.id} className={`plan-step ${step.status}`}>
+            <span>{index + 1}</span>
+            <div>
+              <strong>{step.description}</strong>
+              {step.detail ? <p>{step.detail}</p> : null}
+            </div>
+            <em>{formatPlanStatus(step.status)}</em>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function SalesOrderDocument({
+  createInvoiceAfterConfirm,
   pending,
   preview,
-  order,
-  invoice
+  setCreateInvoiceAfterConfirm,
+  onConfirmPreview
 }: {
-  audit: AuditEvent[];
+  createInvoiceAfterConfirm: boolean;
   pending: boolean;
-  preview: SalesOrderPreview | null;
-  order: SalesOrder | null;
-  invoice: ConceptInvoice | null;
+  preview: SalesOrderPreview;
+  setCreateInvoiceAfterConfirm: (value: boolean) => void;
+  onConfirmPreview: () => void;
 }) {
-  const completedActions = new Set(audit.map((event) => event.action));
-  const blocked = Boolean(preview?.warnings.length);
-  const steps = [
-    { action: "search_customer", label: "Resolve customer", icon: UserCheck },
-    { action: "search_product", label: "Resolve product", icon: PackageCheck },
-    { action: "validate_stock", label: "Validate stock", icon: PackageCheck },
-    { action: "prepare_sales_order", label: "Prepare order preview", icon: FileText },
-    { action: "user_approval", label: "Human approval", icon: Check },
-    { action: "create_sales_order", label: "Create sales order", icon: CircleDollarSign },
-    { action: "create_concept_invoice", label: "Generate concept invoice", icon: ReceiptText }
-  ];
-
-  if (!pending && !preview && !order && !invoice && !steps.some((step) => completedActions.has(step.action))) {
-    return null;
-  }
+  const blocked = preview.warnings.length > 0;
 
   return (
-    <div className="rounded-lg border border-line bg-white p-4">
-      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-steel">
-        <GitBranch className="h-4 w-4" aria-hidden="true" />
-        Agent execution plan
-      </div>
-      <div className="grid gap-2 sm:grid-cols-2">
-        {steps.map((step) => {
-          const Icon = step.icon;
-          const completed = completedActions.has(step.action);
-          const isApprovalBlocked = step.action === "user_approval" && blocked;
-          const status = completed ? "completed" : isApprovalBlocked ? "blocked" : pending ? "pending" : "waiting";
+    <article className="document-card">
+      <DocumentTitle
+        icon={<FileText size={20} />}
+        kicker="Previa"
+        title="Pedido de venda"
+        status={blocked ? "Revisao necessaria" : "Aguardando confirmacao"}
+      />
 
-          return (
-            <div key={step.action} className="flex items-center justify-between rounded-md border border-line px-3 py-2">
-              <span className="flex items-center gap-2 text-sm">
-                <Icon className="h-4 w-4 text-steel" aria-hidden="true" />
-                {step.label}
-              </span>
-              <span
-                className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                  status === "completed"
-                    ? "bg-[#e9f6f3] text-signal"
-                    : status === "blocked"
-                      ? "bg-[#fff3ef] text-coral"
-                      : "bg-[#fbfaf7] text-steel"
-                }`}
-              >
-                {status}
-              </span>
-            </div>
-          );
-        })}
+      {blocked ? (
+        <div className="warning-box">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>Confirmacao bloqueada</strong>
+            {preview.warnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="document-grid">
+        <Metric label="Cliente" value={preview.customer.name} />
+        <Metric label="CNPJ" value={preview.customer.taxId} />
+        <Metric label="Cidade" value={preview.customer.city} />
       </div>
+
+      <LinesTable lines={preview.lines} />
+
+      <div className="document-total">
+        <label className="invoice-toggle">
+          <input
+            checked={createInvoiceAfterConfirm}
+            onChange={(event) => setCreateInvoiceAfterConfirm(event.target.checked)}
+            type="checkbox"
+          />
+          Gerar nota fiscal conceitual apos confirmar
+        </label>
+        <div>
+          <span>Subtotal</span>
+          <strong>{money(preview.subtotal)}</strong>
+        </div>
+      </div>
+
+      <div className="document-actions">
+        <button type="button" className="primary-action" disabled={pending || blocked} onClick={onConfirmPreview}>
+          <Check size={18} />
+          Confirmar pedido
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function ConfirmedOrderDocument({ invoice, order }: { invoice: ConceptInvoice | null; order: SalesOrder }) {
+  return (
+    <article className="document-card">
+      <DocumentTitle
+        icon={<FileText size={20} />}
+        kicker="Confirmado"
+        title="Pedido de venda"
+        status={order.status}
+      />
+      <div className="document-grid">
+        <Metric label="Pedido" value={order.id} />
+        <Metric label="Cliente" value={order.customer.name} />
+        <Metric label="Criado em" value={formatDate(order.createdAt)} />
+      </div>
+      <LinesTable lines={order.lines} />
+      <div className="document-total compact">
+        <div>
+          <span>Total</span>
+          <strong>{money(order.subtotal)}</strong>
+        </div>
+      </div>
+      {invoice ? <InvoiceDocument invoice={invoice} /> : null}
+    </article>
+  );
+}
+
+function InvoiceDocument({ invoice }: { invoice: ConceptInvoice }) {
+  return (
+    <div className="invoice-card">
+      <DocumentTitle
+        icon={<ReceiptText size={20} />}
+        kicker="Documento fiscal"
+        title="Nota fiscal conceitual"
+        status={invoice.id}
+      />
+      <div className="document-grid">
+        <Metric label="Cliente" value={invoice.customerName} />
+        <Metric label="Pedido" value={invoice.salesOrderId} />
+        <Metric label="Emissao" value={formatDate(invoice.issuedAt)} />
+      </div>
+      <div className="document-total compact">
+        <div>
+          <span>Valor</span>
+          <strong>{money(invoice.amount)}</strong>
+        </div>
+      </div>
+      <p className="fine-print">{invoice.disclaimer}</p>
     </div>
   );
+}
+
+function ReportDocument({ result }: { result: AnalyticsResult }) {
+  const filters = result.query.filters.length
+    ? result.query.filters.map((filter) => `${filter.label}: ${filter.value}`).join(" | ")
+    : "sem filtros";
+  const rows = result.rows.length
+    ? result.rows
+    : [{ label: "Sem dados detalhados", value: 0 }];
+
+  return (
+    <article className="document-card spreadsheet-report">
+      <DocumentTitle
+        icon={<Activity size={20} />}
+        kicker="Relatorio"
+        title={result.label}
+        status={result.query.dataSource}
+      />
+
+      <div className="spreadsheet-toolbar">
+        <div>
+          <span>Valor consolidado</span>
+          <strong>{formatAnalyticsValue(result)}</strong>
+        </div>
+        <div>
+          <span>Agrupamento</span>
+          <strong>{result.query.groupBy ?? "sem agrupamento"}</strong>
+        </div>
+        <div>
+          <span>Periodo</span>
+          <strong>{result.query.dateRange}</strong>
+        </div>
+      </div>
+
+      <div className="spreadsheet-meta">
+        <span>Fonte: {result.query.dataSource}</span>
+        <span>Capacidade: {result.query.capability}</span>
+        <span>Filtros: {filters}</span>
+        <span>Entidades: {result.query.entities.join(", ")}</span>
+      </div>
+
+      <div className="spreadsheet-shell" role="table" aria-label={result.label}>
+        <div className="spreadsheet-row spreadsheet-head" role="row">
+          <span role="columnheader">#</span>
+          <span role="columnheader">Descricao</span>
+          <span role="columnheader">Metrica</span>
+          <span role="columnheader">Valor</span>
+        </div>
+        {rows.map((row, index) => (
+          <div key={`${row.label}-${index}`} className="spreadsheet-row" role="row">
+            <span role="cell">{index + 1}</span>
+            <span role="cell">{row.label}</span>
+            <span role="cell">{result.metric}</span>
+            <strong role="cell">{result.rows.length ? formatAnalyticsValue(result, row.value) : "-"}</strong>
+          </div>
+        ))}
+        <div className="spreadsheet-row spreadsheet-total" role="row">
+          <span role="cell" />
+          <span role="cell">Total</span>
+          <span role="cell">{result.metric}</span>
+          <strong role="cell">{formatAnalyticsValue(result)}</strong>
+        </div>
+      </div>
+
+      <div className="spreadsheet-footnote">
+        <span>{result.rows.length} linha(s)</span>
+        <span>Atualizado em tempo real pelo MCP Analytics</span>
+      </div>
+    </article>
+  );
+}
+
+function LinesTable({ lines }: { lines: SalesOrderPreview["lines"] }) {
+  return (
+    <div className="lines-table">
+      <div className="lines-head">
+        <span>Item</span>
+        <span>Qtd.</span>
+        <span>Unitario</span>
+        <span>Total</span>
+      </div>
+      {lines.map((line) => (
+        <div key={`${line.productId}-${line.quantity}`} className="lines-row">
+          <div>
+            <strong>{line.name}</strong>
+            <small>{line.sku}</small>
+          </div>
+          <span>{line.quantity}</span>
+          <span>{money(line.unitPrice)}</span>
+          <strong>{money(line.total)}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DocumentTitle({
+  icon,
+  kicker,
+  status,
+  title
+}: {
+  icon: React.ReactNode;
+  kicker: string;
+  status: string;
+  title: string;
+}) {
+  return (
+    <div className="document-title">
+      <div className="document-title-icon">{icon}</div>
+      <div>
+        <p>{kicker}</p>
+        <h3>{title}</h3>
+      </div>
+      <span>{status}</span>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function TraceSummary({ trace }: { trace: McpTrace }) {
+  const failures = trace.filter((entry) => entry.status === "error").length;
+  return (
+    <div className="trace-summary">
+      <Activity size={15} />
+      {trace.length} MCP calls
+      {failures ? `, ${failures} erro(s)` : ""}
+    </div>
+  );
+}
+
+function OperationalFooter({
+  audit,
+  conversationContext,
+  trace
+}: {
+  audit: AuditEvent[];
+  conversationContext: ConversationContext;
+  trace: McpTrace;
+}) {
+  return (
+    <div className="operational-footer">
+      <details open>
+        <summary>Memoria da sessao</summary>
+        <div className="memory-grid">
+          <Metric label="Pedido ativo" value={conversationContext.activeOrderId ?? "-"} />
+          <Metric label="Nota ativa" value={conversationContext.activeInvoiceId ?? "-"} />
+          <Metric label="Cliente" value={conversationContext.activeCustomer?.name ?? "-"} />
+          <Metric
+            label="Produtos"
+            value={conversationContext.activeProducts.length
+              ? conversationContext.activeProducts.map((product) => product.name).join(", ")
+              : "-"}
+          />
+          <Metric label="Documento" value={conversationContext.lastDocumentType ?? "-"} />
+          <Metric label="Pendente" value={conversationContext.pendingConfirmation} />
+        </div>
+      </details>
+      <details>
+        <summary>Execucao MCP</summary>
+        {trace.length ? (
+          <div className="trace-list">
+            {trace.map((entry) => (
+              <div key={entry.id}>
+                <span>{entry.role}.{entry.tool}</span>
+                <strong>{entry.status} · {entry.durationMs}ms</strong>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p>Nenhuma chamada MCP registrada no ultimo comando.</p>
+        )}
+      </details>
+      <details>
+        <summary>Auditoria</summary>
+        <div className="audit-list">
+          {audit.slice(0, 8).map((event) => (
+            <div key={event.id}>
+              <span>{event.action}</span>
+              <p>{event.summary}</p>
+            </div>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function isAgentQuestion(text: string) {
+  const normalized = text.toLowerCase();
+  return text.includes("?")
+    || normalized.includes("preciso de mais contexto")
+    || normalized.includes("informe ")
+    || normalized.includes("qual ")
+    || normalized.includes("confirme");
+}
+
+function inferDocumentTitle(response: AgentResponse) {
+  const text = response.message.text.toLowerCase();
+  const firstAuditAction = response.auditEvents[0]?.action ?? "";
+
+  if (firstAuditAction.includes("list_low_stock") || text.includes("estoque baixo")) {
+    return "Diagnostico de estoque";
+  }
+  if (firstAuditAction.includes("create_customer") || text.includes("cliente")) {
+    return "Cadastro de cliente";
+  }
+  if (firstAuditAction.includes("create_product") || firstAuditAction.includes("update_product") || text.includes("produto")) {
+    return "Cadastro de produto";
+  }
+  if (firstAuditAction.includes("create_supplier") || text.includes("fornecedor")) {
+    return "Cadastro de fornecedor";
+  }
+  if (firstAuditAction.includes("list_recent_orders") || text.includes("pedido")) {
+    return "Lista de pedidos";
+  }
+  return "Resultado da solicitacao";
+}
+
+function getResultSummary(text: string) {
+  const [summary] = text.split(":");
+  return summary?.trim() || text;
+}
+
+function extractResultItems(text: string) {
+  const listSegment = text.includes(":") ? text.slice(text.indexOf(":") + 1) : "";
+  if (!listSegment) {
+    return [];
+  }
+
+  return listSegment
+    .replace(/\.\s*Sugestao:.+$/i, "")
+    .replace(/\.\s*$/, "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
