@@ -224,6 +224,19 @@ export const ExecutionPlanSchema = z.object({
   steps: z.array(ExecutionPlanStepSchema).min(1)
 });
 
+export const ClarificationOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().nullable().optional()
+});
+
+export const ClarificationRequestSchema = z.object({
+  kind: z.enum(["customer", "product"]),
+  query: z.string(),
+  question: z.string(),
+  options: z.array(ClarificationOptionSchema).min(2)
+});
+
 export const AgentRequestSchema = z.object({
   message: z.string().min(1),
   lastOrderId: z.string().optional(),
@@ -243,6 +256,7 @@ export const AgentResponseSchema = z.object({
   invoice: ConceptInvoiceSchema.nullable().optional(),
   analyticsResult: AnalyticsResultSchema.nullable().optional(),
   executionPlan: ExecutionPlanSchema.nullable().optional(),
+  clarification: ClarificationRequestSchema.nullable().optional(),
   auditEvents: z.array(AuditEventSchema),
   mcpTrace: z.array(
     z.object({
@@ -339,6 +353,8 @@ export type ConversationEntity = z.infer<typeof ConversationEntitySchema>;
 export type ConversationContext = z.infer<typeof ConversationContextSchema>;
 export type ExecutionPlan = z.infer<typeof ExecutionPlanSchema>;
 export type ExecutionPlanStep = z.infer<typeof ExecutionPlanStepSchema>;
+export type ClarificationOption = z.infer<typeof ClarificationOptionSchema>;
+export type ClarificationRequest = z.infer<typeof ClarificationRequestSchema>;
 export type AgentRequest = z.infer<typeof AgentRequestSchema>;
 export type AgentConfirmRequest = z.infer<typeof AgentConfirmRequestSchema>;
 export type AgentResponse = z.infer<typeof AgentResponseSchema>;

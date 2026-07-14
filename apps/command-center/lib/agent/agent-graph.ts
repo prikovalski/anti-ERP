@@ -6,6 +6,7 @@ import type {
   AnalyticsMetric,
   AnalyticsResult,
   AuditEvent,
+  ClarificationRequest,
   ConceptInvoice,
   ConversationContext,
   Customer,
@@ -17,6 +18,7 @@ import type {
 } from "@anti-erp/shared";
 import { getCapabilityGateway, type CapabilityGateway } from "../capabilities";
 import { recordAgentStep } from "../observability/mcp-trace";
+import { createCustomerDisambiguation, createProductDisambiguation } from "./disambiguation";
 import { parseIntentLocally } from "./intent-parser";
 import { inferIntentWithOpenRouter, type AgentIntent } from "./openrouter";
 import { buildLocalExecutionPlan, toExecutionPlan, type PlannedAction, type PlannedWorkflow } from "./planner";
@@ -74,6 +76,7 @@ type OrderUpdateOperation = "add" | "set_quantity" | "remove";
 type ResolvedOrderLine = {
   requested: RequestedOrderLine;
   product: Product | null;
+  matches?: Product[];
 };
 
 type StockResult = {
@@ -104,6 +107,7 @@ const AgentGraphState = Annotation.Root({
   productUpdateCommand: Annotation<ProductUpdateCommand | null>,
   orderUpdateOperation: Annotation<OrderUpdateOperation | null>,
   orderUpdateError: Annotation<string | null>,
+  clarification: Annotation<ClarificationRequest | null>,
   productToUpdate: Annotation<Product | null>,
   updatedProduct: Annotation<Product | null>,
   existingOrder: Annotation<SalesOrder | null>,
@@ -264,6 +268,7 @@ export async function runAgentGraph(input: AgentGraphInput) {
     productUpdateCommand: null,
     orderUpdateOperation: null,
     orderUpdateError: null,
+    clarification: null,
     productToUpdate: null,
     updatedProduct: null,
     existingOrder: null,
@@ -423,7 +428,10 @@ async function resolveCustomerNode(state: AgentGraphStateValue) {
   const matches = state.intent.customerQuery
     ? await state.gateway.searchCustomer({ query: state.intent.customerQuery })
     : [];
-  const customer = matches[0] ?? null;
+  const clarification = matches.length > 1
+    ? createCustomerDisambiguation(state.intent.customerQuery ?? "", matches)
+    : null;
+  const customer = clarification ? null : matches[0] ?? null;
   await recordAgentStep({
     name: "resolve_customer",
     status: "success",
@@ -431,12 +439,14 @@ async function resolveCustomerNode(state: AgentGraphStateValue) {
     outputs: {
       customerQuery: state.intent.customerQuery,
       matchedCustomer: customer?.name ?? null,
-      matches: matches.length
+      matches: matches.length,
+      ambiguous: Boolean(clarification)
     }
   });
 
   return {
-    customer
+    customer,
+    clarification
   };
 }
 
@@ -452,10 +462,15 @@ async function resolveProductsNode(state: AgentGraphStateValue) {
       const matches = await searchProductWithFallback(state.gateway!, line.productQuery);
       return {
         requested: line,
-        product: matches[0] ?? null
+        product: matches.length === 1 ? matches[0] ?? null : null,
+        matches
       };
     })
   );
+  const ambiguousLine = resolvedLines.find((line) => line.matches && line.matches.length > 1);
+  const clarification = state.clarification ?? (ambiguousLine
+    ? createProductDisambiguation(ambiguousLine.requested.productQuery, ambiguousLine.matches ?? [])
+    : null);
 
   await recordAgentStep({
     name: "resolve_products",
@@ -463,17 +478,22 @@ async function resolveProductsNode(state: AgentGraphStateValue) {
     durationMs: performance.now() - startedAt,
     outputs: {
       requestedLines,
-      resolvedProducts: resolvedLines.map((line) => line.product?.name ?? null)
+      resolvedProducts: resolvedLines.map((line) => line.product?.name ?? null),
+      ambiguousProduct: ambiguousLine?.requested.productQuery ?? null
     }
   });
 
   return {
     requestedLines,
-    resolvedLines
+    resolvedLines,
+    clarification
   };
 }
 
 function pickSalesOrderReadiness(state: AgentGraphStateValue) {
+  if (state.clarification) {
+    return "needs_context";
+  }
   const missingProducts = state.resolvedLines.some((line: ResolvedOrderLine) => !line.product);
   if (!state.customer || state.requestedLines.length === 0 || missingProducts) {
     return "needs_context";
@@ -796,7 +816,10 @@ async function resolveProductToUpdateNode(state: AgentGraphStateValue) {
 
   const startedAt = performance.now();
   const matches = await searchProductWithFallback(state.gateway, state.productUpdateCommand.productQuery);
-  const productToUpdate = matches[0] ?? null;
+  const clarification = matches.length > 1
+    ? createProductDisambiguation(state.productUpdateCommand.productQuery, matches)
+    : null;
+  const productToUpdate = clarification ? null : matches[0] ?? null;
 
   await recordAgentStep({
     name: "resolve_product_to_update",
@@ -805,12 +828,14 @@ async function resolveProductToUpdateNode(state: AgentGraphStateValue) {
     outputs: {
       productQuery: state.productUpdateCommand.productQuery,
       matchedProduct: productToUpdate?.name ?? null,
-      matches: matches.length
+      matches: matches.length,
+      ambiguous: Boolean(clarification)
     }
   });
 
   return {
-    productToUpdate
+    productToUpdate,
+    clarification
   };
 }
 
@@ -905,10 +930,14 @@ async function resolveOrderUpdateProductNode(state: AgentGraphStateValue) {
   const startedAt = performance.now();
   const requested = state.requestedLines[0] as RequestedOrderLine;
   const matches = await searchProductWithFallback(state.gateway, requested.productQuery);
+  const clarification = matches.length > 1
+    ? createProductDisambiguation(requested.productQuery, matches)
+    : null;
   const resolvedLines = [
     {
       requested,
-      product: matches[0] ?? null
+      product: clarification ? null : matches[0] ?? null,
+      matches
     }
   ];
 
@@ -919,12 +948,14 @@ async function resolveOrderUpdateProductNode(state: AgentGraphStateValue) {
     outputs: {
       productQuery: requested.productQuery,
       matchedProduct: resolvedLines[0]?.product?.name ?? null,
-      matches: matches.length
+      matches: matches.length,
+      ambiguous: Boolean(clarification)
     }
   });
 
   return {
-    resolvedLines
+    resolvedLines,
+    clarification
   };
 }
 
@@ -1575,6 +1606,10 @@ function createPreparedOrderResponse(state: AgentGraphStateValue): AgentResponse
 }
 
 function createOrderClarificationResponse(state: AgentGraphStateValue): AgentResponse {
+  if (state.clarification) {
+    return createDisambiguationResponse(state);
+  }
+
   const missingProducts = state.resolvedLines
     .filter((line: ResolvedOrderLine) => !line.product)
     .map((line: ResolvedOrderLine) => line.requested.productQuery);
@@ -1658,6 +1693,10 @@ function createProductUpdateResponse(state: AgentGraphStateValue): AgentResponse
     };
   }
 
+  if (state.clarification) {
+    return createDisambiguationResponse(state);
+  }
+
   if (!state.productToUpdate) {
     return {
       mode: state.mode,
@@ -1737,6 +1776,10 @@ function createOrderUpdateResponse(state: AgentGraphStateValue): AgentResponse {
     };
   }
 
+  if (state.clarification) {
+    return createDisambiguationResponse(state);
+  }
+
   if (!resolved?.product) {
     return {
       mode: state.mode,
@@ -1780,6 +1823,29 @@ function createOrderUpdateResponse(state: AgentGraphStateValue): AgentResponse {
       audit(auditAction, `Updated ${resolved.product.name} in ${order.id}.`)
     ],
     lastOrderId: order.id
+  };
+}
+
+function createDisambiguationResponse(state: AgentGraphStateValue): AgentResponse {
+  const clarification = state.clarification as ClarificationRequest;
+  return {
+    mode: state.mode,
+    clarification,
+    message: {
+      id: createId("msg"),
+      role: "agent",
+      text: `${clarification.question} ${clarification.options
+        .map((option, index) => `${index + 1}. ${option.label}${option.description ? ` (${option.description})` : ""}`)
+        .join("; ")}.`
+    },
+    auditEvents: [
+      audit(
+        "disambiguation_required",
+        `Ambiguous ${clarification.kind} query "${clarification.query}" with ${clarification.options.length} option(s).`,
+        "agent"
+      )
+    ],
+    lastOrderId: state.lastOrderId ?? null
   };
 }
 
