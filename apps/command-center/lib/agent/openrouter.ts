@@ -54,33 +54,45 @@ export async function inferIntentWithOpenRouter(message: string): Promise<AgentI
 
   const model = process.env.OPENROUTER_MODEL ?? "openrouter/free";
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    signal: controller.signal,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-      "X-OpenRouter-Title": "anti-ERP"
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|add_item_to_order|set_order_item_quantity|remove_item_from_order|planned_workflow|create_order_with_invoice|list_orders|traditional_flow|analytics_query|inventory_diagnostic|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. Use planned_workflow when the user asks for multiple operational tasks in one message, such as creating a customer, product, order, invoice, and report. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For 'adicione um notebook no pedido criado', use intent=add_item_to_order, productQuery=notebook, quantity=1. For 'altere o notebook do pedido para 3 unidades', use intent=set_order_item_quantity, productQuery=notebook, quantity=3. For 'remova o monitor do pedido criado', use intent=remove_item_from_order, productQuery=monitor, quantity=0. For stock updates, set productUpdate.availableStock. For 'quais produtos estão com estoque baixo', use intent=inventory_diagnostic. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
-        },
-        {
-          role: "user",
-          content: message
-        }
-      ],
-      temperature: 0,
-      max_tokens: 220
-    })
-  }).finally(() => clearTimeout(timeout));
+  const timeoutMs = Number(process.env.OPENROUTER_TIMEOUT_MS ?? 3500);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+        "X-OpenRouter-Title": "anti-ERP"
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|add_item_to_order|set_order_item_quantity|remove_item_from_order|planned_workflow|create_order_with_invoice|list_orders|traditional_flow|analytics_query|inventory_diagnostic|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. Use planned_workflow when the user asks for multiple operational tasks in one message, such as creating a customer, product, order, invoice, and report. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For 'adicione um notebook no pedido criado', use intent=add_item_to_order, productQuery=notebook, quantity=1. For 'altere o notebook do pedido para 3 unidades', use intent=set_order_item_quantity, productQuery=notebook, quantity=3. For 'remova o monitor do pedido criado', use intent=remove_item_from_order, productQuery=monitor, quantity=0. For stock updates, set productUpdate.availableStock. For 'quais produtos estão com estoque baixo', use intent=inventory_diagnostic. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
+          },
+          {
+            role: "user",
+            content: message
+          }
+        ],
+        temperature: 0,
+        max_tokens: 220
+      })
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      console.warn(`OpenRouter intent inference timed out after ${timeoutMs}ms. Using local parser.`);
+      return null;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`OpenRouter request failed with ${response.status}`);
@@ -104,6 +116,10 @@ export async function inferIntentWithOpenRouter(message: string): Promise<AgentI
   } catch {
     return null;
   }
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function normalizePlannerPayload(raw: unknown, message: string) {

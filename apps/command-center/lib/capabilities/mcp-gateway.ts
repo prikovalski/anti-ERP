@@ -44,6 +44,8 @@ const salesOrderTools = new Set([
 ]);
 const invoiceTools = new Set(["create_concept_invoice"]);
 const analyticsTools = new Set(["get_traditional_erp_flow", "query_sales_metrics"]);
+const MCP_CONNECT_TIMEOUT_MS = Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 5000);
+const MCP_TOOL_TIMEOUT_MS = Number(process.env.MCP_TOOL_TIMEOUT_MS ?? 8000);
 
 const ToolTextResultSchema = z.object({
   content: z.array(
@@ -56,7 +58,17 @@ const ToolTextResultSchema = z.object({
 
 async function getClient(role: McpServerRole) {
   if (!clientPromises.has(role)) {
-    clientPromises.set(role, createClient(role));
+    clientPromises.set(
+      role,
+      withTimeout(
+        createClient(role),
+        MCP_CONNECT_TIMEOUT_MS,
+        `MCP server ${role} did not connect within ${MCP_CONNECT_TIMEOUT_MS}ms.`
+      ).catch((error) => {
+        clientPromises.delete(role);
+        throw error;
+      })
+    );
   }
   return clientPromises.get(role)!;
 }
@@ -179,7 +191,11 @@ async function callTool<T>(name: string, args: Record<string, unknown>, schema: 
 
   try {
     const client = await getClient(role);
-    const result = await client.callTool({ name, arguments: args });
+    const result = await withTimeout(
+      client.callTool({ name, arguments: args }),
+      MCP_TOOL_TIMEOUT_MS,
+      `MCP tool ${name} did not respond within ${MCP_TOOL_TIMEOUT_MS}ms.`
+    );
     const parsedResult = ToolTextResultSchema.parse(result);
     const text = parsedResult.content[0]?.text;
     if (!text) {
@@ -205,6 +221,22 @@ async function callTool<T>(name: string, args: Record<string, unknown>, schema: 
       error
     });
     throw error;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 

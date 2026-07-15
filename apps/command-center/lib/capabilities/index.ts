@@ -12,9 +12,15 @@ export async function getCapabilityGateway(): Promise<CapabilityGateway> {
     return prismaGateway;
   }
 
-  if ((process.env.CAPABILITY_GATEWAY === "mcp" || process.env.DATABASE_URL) && process.env.CAPABILITY_GATEWAY !== "demo") {
+  if (process.env.CAPABILITY_GATEWAY === "mcp" && process.env.MCP_STDIO_ENABLED === "true") {
     mcpGateway ??= new McpCapabilityGateway();
     return mcpGateway;
+  }
+
+  if ((process.env.CAPABILITY_GATEWAY === "mcp" || process.env.DATABASE_URL) && process.env.CAPABILITY_GATEWAY !== "demo") {
+    const { PrismaCapabilityGateway } = await import("./prisma-gateway");
+    prismaGateway ??= new PrismaCapabilityGateway();
+    return prismaGateway;
   }
 
   return demoCapabilityGateway;

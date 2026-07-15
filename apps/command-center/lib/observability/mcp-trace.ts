@@ -19,7 +19,7 @@ export type McpTraceEntry = {
 type McpTraceContext = {
   requestId: string;
   entries: McpTraceEntry[];
-  rootRun?: LangSmithRunTree | null;
+  rootRunPromise?: Promise<LangSmithRunTree | null>;
 };
 
 const traceStorage = new AsyncLocalStorage<McpTraceContext>();
@@ -56,43 +56,46 @@ export async function withMcpTrace<T>(
 ) {
   const context: McpTraceContext = {
     requestId: createId("req"),
-    entries: [],
-    rootRun: null
+    entries: []
   };
-  context.rootRun = await withTimeout(
-    createLangSmithRootRun({
-      name: config.name,
-      requestId: context.requestId,
-      inputs: config.inputs ?? {},
-      metadata: config.metadata ?? {},
-      tags: config.tags ?? []
-    }),
-    2500
+  context.rootRunPromise = createLangSmithRootRun({
+    name: config.name,
+    requestId: context.requestId,
+    inputs: config.inputs ?? {},
+    metadata: config.metadata ?? {},
+    tags: config.tags ?? []
+  });
+  runInBackground(
+    context.rootRunPromise.then((rootRun) => rootRun?.postRun()),
+    "langsmith.post_root_run"
   );
 
   const result = await traceStorage.run(context, async () => {
-    await withTimeout(context.rootRun?.postRun() ?? Promise.resolve(), 2500);
     try {
       const output = await operation();
-      await withTimeout(
-        finalizeLangSmithRootRun(context.rootRun, {
-          status: "success",
-          entries: context.entries.length
-        }),
-        2500
+      runInBackground(
+        context.rootRunPromise?.then((rootRun) =>
+          finalizeLangSmithRootRun(rootRun, {
+            status: "success",
+            entries: context.entries.length
+          })
+        ),
+        "langsmith.finalize_root_run"
       );
       return output;
     } catch (error) {
-      await withTimeout(
-        finalizeLangSmithRootRun(
-          context.rootRun,
-          {
-            status: "error",
-            entries: context.entries.length
-          },
-          summarizeError(error)
+      runInBackground(
+        context.rootRunPromise?.then((rootRun) =>
+          finalizeLangSmithRootRun(
+            rootRun,
+            {
+              status: "error",
+              entries: context.entries.length
+            },
+            summarizeError(error)
+          )
         ),
-        2500
+        "langsmith.finalize_root_run_error"
       );
       throw error;
     }
@@ -129,18 +132,23 @@ export async function recordAgentStep(input: {
   };
 
   console.info(JSON.stringify({ event: "agent_step", ...entry }));
-  await withTimeout(sendLangSmithChildRun(context?.rootRun ?? null, {
-    name: `agent.${input.name}`,
-    runType: "chain",
-    tags: ["anti-erp", "agent", input.name],
-    requestId: entry.requestId,
-    status: entry.status,
-    durationMs: entry.durationMs,
-    inputSummary: entry.inputSummary,
-    outputSummary: entry.outputSummary,
-    error: entry.error,
-    timestamp
-  }), 2500);
+  runInBackground(
+    context?.rootRunPromise?.then((rootRun) =>
+      sendLangSmithChildRun(rootRun, {
+        name: `agent.${input.name}`,
+        runType: "chain",
+        tags: ["anti-erp", "agent", input.name],
+        requestId: entry.requestId,
+        status: entry.status,
+        durationMs: entry.durationMs,
+        inputSummary: entry.inputSummary,
+        outputSummary: entry.outputSummary,
+        error: entry.error,
+        timestamp
+      })
+    ),
+    `langsmith.agent.${input.name}`
+  );
 }
 
 export async function recordMcpCall(input: {
@@ -168,7 +176,11 @@ export async function recordMcpCall(input: {
 
   context?.entries.push(entry);
   console.info(JSON.stringify({ event: "mcp_call", ...entry }));
-  await Promise.allSettled([persistMcpTrace(entry), withTimeout(sendLangSmithMcpTrace(context?.rootRun ?? null, entry), 2500)]);
+  runInBackground(persistMcpTrace(entry), "mcp_trace.persist");
+  runInBackground(
+    context?.rootRunPromise?.then((rootRun) => sendLangSmithMcpTrace(rootRun, entry)),
+    `langsmith.mcp.${entry.role}.${entry.tool}`
+  );
 }
 
 function summarize(value: unknown): Record<string, unknown> {
@@ -427,4 +439,18 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
       clearTimeout(timeout);
     }
   }
+}
+
+function runInBackground(promise: Promise<unknown> | undefined, label: string) {
+  if (!promise) {
+    return;
+  }
+
+  void withTimeout(promise, Number(process.env.LANGSMITH_BACKGROUND_TIMEOUT_MS ?? 2500)).catch((error) => {
+    console.warn(JSON.stringify({
+      event: "background_task_failed",
+      label,
+      error: summarizeError(error)
+    }));
+  });
 }

@@ -2,7 +2,6 @@ import { AgentRequestSchema, AgentResponseSchema } from "@anti-erp/shared";
 import { NextResponse } from "next/server";
 import { evolveConversationContext } from "@/lib/agent/conversation-context";
 import { runDirectAgent } from "@/lib/agent/direct-agent";
-import { runAgentGraph } from "@/lib/agent/agent-graph";
 import { withMcpTrace } from "@/lib/observability/mcp-trace";
 
 function capabilityFailureResponse() {
@@ -17,6 +16,7 @@ function capabilityFailureResponse() {
 
 export async function POST(request: Request) {
   const body = AgentRequestSchema.parse(await request.json());
+  const timeoutMs = Number(process.env.AGENT_COMMAND_TIMEOUT_MS ?? 12000);
 
   try {
     const { result: response, trace } = await withMcpTrace(
@@ -30,10 +30,14 @@ export async function POST(request: Request) {
         tags: ["command"]
       },
       async () => {
-        return runDirectAgent({
-          message: body.message,
-          lastOrderId: body.lastOrderId ?? body.conversationContext?.activeOrderId ?? undefined
-        });
+        return withTimeout(
+          runDirectAgent({
+            message: body.message,
+            lastOrderId: body.lastOrderId ?? body.conversationContext?.activeOrderId ?? undefined
+          }),
+          timeoutMs,
+          `Agent command exceeded ${timeoutMs}ms.`
+        );
       }
     );
     return NextResponse.json(AgentResponseSchema.parse({
@@ -48,5 +52,21 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Agent capability gateway failed. Returning controlled error.", error);
     return capabilityFailureResponse();
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
