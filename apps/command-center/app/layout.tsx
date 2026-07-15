@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import "./globals.css";
 
 export const metadata: Metadata = {
   title: "anti-ERP Command Center",
@@ -14,6 +13,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <link rel="stylesheet" href="/globals.css" />
+      </head>
       <body>{children}</body>
     </html>
   );

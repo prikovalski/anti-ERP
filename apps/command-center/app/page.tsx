@@ -10,16 +10,6 @@ import type {
   SalesOrder,
   SalesOrderPreview
 } from "@anti-erp/shared";
-import {
-  Activity,
-  AlertTriangle,
-  Bot,
-  Check,
-  FileText,
-  ReceiptText,
-  Send,
-  Sparkles
-} from "lucide-react";
 import { useMemo, useState } from "react";
 
 type Message = {
@@ -94,6 +84,14 @@ function formatPlanStatus(status: ExecutionPlan["steps"][number]["status"]) {
     return "Ignorada";
   }
   return "Planejada";
+}
+
+function UiIcon({ label, size = 16 }: { label: string; size?: number }) {
+  return (
+    <span aria-hidden="true" className="ui-icon" style={{ fontSize: `${size}px` }}>
+      {label}
+    </span>
+  );
 }
 
 export default function CommandCenterPage() {
@@ -282,7 +280,7 @@ export default function CommandCenterPage() {
             <h1>Command Center</h1>
           </div>
           <span className="mode-pill">
-            <Sparkles size={15} />
+            <UiIcon label="*" size={15} />
             {agentMode === "openrouter" ? "OpenRouter" : "LangGraph"}
           </span>
         </div>
@@ -291,7 +289,7 @@ export default function CommandCenterPage() {
           {messages.map((message) => (
             <div key={message.id} className={`chat-bubble ${message.role}`}>
               <div className="bubble-role">
-                {message.role === "agent" ? <Bot size={14} /> : <Send size={14} />}
+                {message.role === "agent" ? <UiIcon label="AI" size={14} /> : <UiIcon label=">" size={14} />}
                 {message.role === "agent" ? "Agente" : "Voce"}
               </div>
               <p>{message.text}</p>
@@ -300,7 +298,7 @@ export default function CommandCenterPage() {
           {pending ? (
             <div className="chat-bubble agent">
               <div className="bubble-role">
-                <Bot size={14} />
+                <UiIcon label="AI" size={14} />
                 Agente
               </div>
               <p>Processando...</p>
@@ -330,7 +328,7 @@ export default function CommandCenterPage() {
             placeholder="Digite um comando, ex: crie um pedido para a Northstar de 10 notebooks"
           />
           <button type="submit" disabled={pending} title="Enviar comando">
-            <Send size={20} />
+            <UiIcon label=">" size={20} />
           </button>
         </form>
       </aside>
@@ -420,7 +418,7 @@ function DocumentWorkspace({
 function EmptyDocument() {
   return (
     <div className="empty-document">
-      <FileText size={44} />
+      <UiIcon label="DOC" size={44} />
       <h3>Nenhum documento aberto</h3>
       <p>
         Envie um comando no chat. Pedidos, notas fiscais conceituais, cadastros e relatorios
@@ -436,7 +434,7 @@ function GenericResultDocument({ document }: { document: DocumentMessage }) {
   return (
     <article className="document-card result-document">
       <DocumentTitle
-        icon={<FileText size={20} />}
+        icon={<UiIcon label="DOC" size={20} />}
         kicker="Resultado"
         title={document.title}
         status="Concluido"
@@ -459,7 +457,7 @@ function ExecutionPlanDocument({ plan }: { plan: ExecutionPlan }) {
   return (
     <article className="document-card plan-document">
       <DocumentTitle
-        icon={<Sparkles size={20} />}
+        icon={<UiIcon label="*" size={20} />}
         kicker="Plano"
         title="Execucao planejada"
         status={`${plan.steps.length} etapa(s)`}
@@ -499,7 +497,7 @@ function SalesOrderDocument({
   return (
     <article className="document-card">
       <DocumentTitle
-        icon={<FileText size={20} />}
+        icon={<UiIcon label="DOC" size={20} />}
         kicker="Previa"
         title="Pedido de venda"
         status={blocked ? "Revisao necessaria" : "Aguardando confirmacao"}
@@ -507,7 +505,7 @@ function SalesOrderDocument({
 
       {blocked ? (
         <div className="warning-box">
-          <AlertTriangle size={18} />
+          <UiIcon label="!" size={18} />
           <div>
             <strong>Confirmacao bloqueada</strong>
             {preview.warnings.map((warning) => (
@@ -542,7 +540,7 @@ function SalesOrderDocument({
 
       <div className="document-actions">
         <button type="button" className="primary-action" disabled={pending || blocked} onClick={onConfirmPreview}>
-          <Check size={18} />
+          <UiIcon label="OK" size={18} />
           Confirmar pedido
         </button>
       </div>
@@ -554,7 +552,7 @@ function ConfirmedOrderDocument({ invoice, order }: { invoice: ConceptInvoice | 
   return (
     <article className="document-card">
       <DocumentTitle
-        icon={<FileText size={20} />}
+        icon={<UiIcon label="DOC" size={20} />}
         kicker="Confirmado"
         title="Pedido de venda"
         status={order.status}
@@ -580,7 +578,7 @@ function InvoiceDocument({ invoice }: { invoice: ConceptInvoice }) {
   return (
     <div className="invoice-card">
       <DocumentTitle
-        icon={<ReceiptText size={20} />}
+        icon={<UiIcon label="NF" size={20} />}
         kicker="Documento fiscal"
         title="Nota fiscal conceitual"
         status={invoice.id}
@@ -612,7 +610,7 @@ function ReportDocument({ result }: { result: AnalyticsResult }) {
   return (
     <article className="document-card spreadsheet-report">
       <DocumentTitle
-        icon={<Activity size={20} />}
+        icon={<UiIcon label="BI" size={20} />}
         kicker="Relatorio"
         title={result.label}
         status={result.query.dataSource}
@@ -731,7 +729,7 @@ function TraceSummary({ trace }: { trace: McpTrace }) {
   const failures = trace.filter((entry) => entry.status === "error").length;
   return (
     <div className="trace-summary">
-      <Activity size={15} />
+      <UiIcon label="BI" size={15} />
       {trace.length} MCP calls
       {failures ? `, ${failures} erro(s)` : ""}
     </div>

@@ -1,6 +1,7 @@
 import { AgentRequestSchema, AgentResponseSchema } from "@anti-erp/shared";
 import { NextResponse } from "next/server";
 import { evolveConversationContext } from "@/lib/agent/conversation-context";
+import { runDirectAgent } from "@/lib/agent/direct-agent";
 import { runAgentGraph } from "@/lib/agent/agent-graph";
 import { withMcpTrace } from "@/lib/observability/mcp-trace";
 
@@ -29,10 +30,9 @@ export async function POST(request: Request) {
         tags: ["command"]
       },
       async () => {
-        return runAgentGraph({
+        return runDirectAgent({
           message: body.message,
-          lastOrderId: body.lastOrderId ?? body.conversationContext?.activeOrderId ?? undefined,
-          conversationContext: body.conversationContext
+          lastOrderId: body.lastOrderId ?? body.conversationContext?.activeOrderId ?? undefined
         });
       }
     );
