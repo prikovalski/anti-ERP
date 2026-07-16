@@ -24,7 +24,7 @@ type McpServerRole =
   | "analytics";
 
 const clientPromises = new Map<McpServerRole, Promise<Client>>();
-const customerTools = new Set(["search_customer", "create_customer"]);
+const customerTools = new Set(["search_customer", "create_customer", "list_customers"]);
 const productTools = new Set([
   "search_product",
   "create_product",
@@ -251,6 +251,10 @@ function parseToolJson(name: string, text: string) {
 export class McpCapabilityGateway implements CapabilityGateway {
   async createCustomer(input: { name: string }) {
     return callTool("create_customer", input, CustomerSchema);
+  }
+
+  async listCustomers() {
+    return callTool("list_customers", {}, z.array(CustomerSchema));
   }
 
   async createProduct(input: { name: string }) {

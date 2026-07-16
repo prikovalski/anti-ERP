@@ -30,6 +30,20 @@ function response(text: string, extra: Partial<AgentResponse> = {}): AgentRespon
 }
 
 export async function runDirectAgent(input: { message: string; lastOrderId?: string | null }): Promise<AgentResponse> {
+  if (asksToListCustomers(input.message)) {
+    const gateway = await getCapabilityGateway();
+    const customers = await gateway.listCustomers();
+    const text = customers.length
+      ? `Encontrei ${customers.length} cliente(s): ${customers
+          .slice(0, 12)
+          .map((customer) => `${customer.name} (${customer.city}, ${customer.status === "active" ? "ativo" : "bloqueado"})`)
+          .join("; ")}.`
+      : "Nao encontrei clientes cadastrados.";
+    return response(text, {
+      auditEvents: [audit("list_customers", `Listados ${customers.length} cliente(s).`)]
+    });
+  }
+
   const intent = parseIntentLocally(input.message);
   const gateway = await getCapabilityGateway();
 
@@ -143,6 +157,20 @@ function inferMetric(message: string): AnalyticsMetric {
     return "order_count";
   }
   return "units_sold";
+}
+
+function asksToListCustomers(message: string) {
+  const normalized = normalizeText(message);
+  return /\b(liste|listar|mostre|mostrar|exiba|exibir|quais|clientes|cliente)\b/.test(normalized)
+    && /\bclientes\b/.test(normalized)
+    && !/\bcompraram|comprou|venderam|vendeu|faturamento|receita|pedido|pedidos\b/.test(normalized);
+}
+
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 function inferDateRange(message: string): AnalyticsDateRange {

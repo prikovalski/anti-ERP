@@ -278,6 +278,17 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return mapCustomer(customer);
   }
 
+  async listCustomers() {
+    await ensureSeeded();
+    const customers = (await prisma.customer.findMany({
+      orderBy: {
+        name: "asc"
+      }
+    })) as DbCustomer[];
+    await audit("list_customers", "Listed customers", { resultCount: customers.length });
+    return customers.map(mapCustomer);
+  }
+
   async createProduct(input: { name: string }) {
     await ensureSeeded();
     const name = cleanName(input.name);

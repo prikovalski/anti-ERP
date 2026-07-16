@@ -73,6 +73,10 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return customer;
   }
 
+  async listCustomers() {
+    return [...this.customers].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   async createProduct(input: { name: string }) {
     const name = cleanName(input.name);
     const normalizedName = normalize(name);

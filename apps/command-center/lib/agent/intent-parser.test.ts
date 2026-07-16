@@ -29,7 +29,17 @@ test("parseIntentLocally parses natural quantity words in order lines", () => {
   assert.equal(intent.wantsInvoice, true);
   assert.deepEqual(intent.orderLines, [
     { productQuery: "monitor", quantity: 1 },
-    { productQuery: "teclados", quantity: 2 }
+    { productQuery: "teclado", quantity: 2 }
+  ]);
+});
+
+test("parseIntentLocally parses order command with explicit customer label", () => {
+  const intent = parseIntentLocally("gere um pedido para o cliente joao silva com 2 monitores");
+
+  assert.equal(intent.intent, "create_order");
+  assert.equal(intent.customerQuery, "joao silva");
+  assert.deepEqual(intent.orderLines, [
+    { productQuery: "monitor", quantity: 2 }
   ]);
 });
 

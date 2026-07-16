@@ -28,5 +28,7 @@ server.tool("create_customer", { name: z.string().trim().min(2) }, async (input)
   json(await gateway.createCustomer(input))
 );
 
+server.tool("list_customers", {}, async () => json(await gateway.listCustomers()));
+
 const transport = new StdioServerTransport();
 await server.connect(transport);

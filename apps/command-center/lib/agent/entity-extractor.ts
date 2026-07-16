@@ -53,7 +53,7 @@ export function cleanEntityName(value: string) {
   return value
     .trim()
     .replace(/\s+/g, " ")
-    .replace(/^(?:de|do|da|dos|das|um|uma|o|a|os|as)\s+/i, "")
+    .replace(/^(?:(?:de|do|da|dos|das|um|uma|o|a|os|as|cliente|clientes|produto|produtos|fornecedor|fornecedores)\s+)+/i, "")
     .replace(/[.!?]+$/g, "");
 }
 
@@ -203,9 +203,23 @@ function extractItemSegment(message: string) {
 }
 
 function cleanProductQuery(value: string) {
-  return cleanEntityName(value)
+  const cleaned = cleanEntityName(value)
     .replace(/\s+(?:unidades?|pcs?|pecas?)$/i, "")
     .trim();
+  const normalized = normalizeText(cleaned);
+  if (/\bmonitores\b/.test(normalized)) {
+    return cleaned.replace(/\bmonitores\b/i, "monitor");
+  }
+  if (/\bnotebooks\b/.test(normalized)) {
+    return cleaned.replace(/\bnotebooks\b/i, "notebook");
+  }
+  if (/\bteclados\b/.test(normalized)) {
+    return cleaned.replace(/\bteclados\b/i, "teclado");
+  }
+  if (/\bmouses\b/.test(normalized)) {
+    return cleaned.replace(/\bmouses\b/i, "mouse");
+  }
+  return cleaned;
 }
 
 function inferAnalyticsMetric(normalized: string): AnalyticsMetric {

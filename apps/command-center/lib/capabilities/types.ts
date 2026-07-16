@@ -13,6 +13,7 @@ import type {
 
 export interface CapabilityGateway {
   createCustomer(input: { name: string }): Promise<Customer>;
+  listCustomers(): Promise<Customer[]>;
   createProduct(input: { name: string }): Promise<Product>;
   createSupplier(input: { name: string }): Promise<Supplier>;
   updateProduct(input: {

@@ -442,8 +442,8 @@ function GenericResultDocument({ document }: { document: DocumentMessage }) {
       <p className="result-summary">{getResultSummary(document.text)}</p>
       {items.length > 0 ? (
         <div className="result-list">
-          {items.map((item) => (
-            <div key={item}>
+          {items.map((item, index) => (
+            <div key={`${document.id}-${index}-${item}`}>
               <span>{item}</span>
             </div>
           ))}
@@ -678,8 +678,8 @@ function LinesTable({ lines }: { lines: SalesOrderPreview["lines"] }) {
         <span>Unitario</span>
         <span>Total</span>
       </div>
-      {lines.map((line) => (
-        <div key={`${line.productId}-${line.quantity}`} className="lines-row">
+      {lines.map((line, index) => (
+        <div key={`${line.productId}-${line.quantity}-${index}`} className="lines-row">
           <div>
             <strong>{line.name}</strong>
             <small>{line.sku}</small>
