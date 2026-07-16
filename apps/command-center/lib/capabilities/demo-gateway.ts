@@ -1,6 +1,7 @@
 import {
   AnalyticsResult,
   ConceptInvoice,
+  ListSalesOrdersInput,
   SalesOrder,
   SalesOrderPreview,
   Supplier,
@@ -226,6 +227,9 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     if (!order) {
       throw new Error(`Sales order ${input.salesOrderId} not found.`);
     }
+    if (order.status === "canceled") {
+      throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
+    }
     const product = this.products.find((candidate) => candidate.id === input.productId);
     if (!product) {
       throw new Error(`Product ${input.productId} not found.`);
@@ -263,6 +267,9 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     const order = salesOrders.get(input.salesOrderId);
     if (!order) {
       throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    if (order.status === "canceled") {
+      throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
     }
     const product = this.products.find((candidate) => candidate.id === input.productId);
     if (!product) {
@@ -302,6 +309,9 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     if (!order) {
       throw new Error(`Sales order ${input.salesOrderId} not found.`);
     }
+    if (order.status === "canceled") {
+      throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
+    }
     const product = this.products.find((candidate) => candidate.id === input.productId);
     if (!product) {
       throw new Error(`Product ${input.productId} not found.`);
@@ -317,6 +327,61 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     product.availableStock += currentLine.quantity;
     order.lines = order.lines.filter((line) => line.productId !== product.id);
     order.subtotal = order.lines.reduce((sum, line) => sum + line.total, 0);
+    salesOrders.set(order.id, order);
+    return order;
+  }
+
+  async cancelSalesOrder(input: { salesOrderId: string }) {
+    const order = salesOrders.get(input.salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    if (order.status !== "canceled") {
+      for (const line of order.lines) {
+        const product = this.products.find((candidate) => candidate.id === line.productId);
+        if (product) {
+          product.availableStock += line.quantity;
+        }
+      }
+      order.status = "canceled";
+      salesOrders.set(order.id, order);
+    }
+    return order;
+  }
+
+  async duplicateSalesOrder(input: { salesOrderId: string }) {
+    const sourceOrder = salesOrders.get(input.salesOrderId);
+    if (!sourceOrder) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    if (sourceOrder.lines.length === 0) {
+      throw new Error(`Sales order ${input.salesOrderId} has no items to duplicate.`);
+    }
+
+    for (const line of sourceOrder.lines) {
+      const product = this.products.find((candidate) => candidate.id === line.productId);
+      if (!product) {
+        throw new Error(`Product ${line.productId} not found.`);
+      }
+      if (product.availableStock < line.quantity) {
+        throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+      }
+    }
+
+    for (const line of sourceOrder.lines) {
+      const product = this.products.find((candidate) => candidate.id === line.productId);
+      if (product) {
+        product.availableStock -= line.quantity;
+      }
+    }
+
+    const order: SalesOrder = {
+      ...sourceOrder,
+      id: createSalesOrderId(),
+      status: "confirmed",
+      createdAt: now(),
+      lines: sourceOrder.lines.map((line) => ({ ...line }))
+    };
     salesOrders.set(order.id, order);
     return order;
   }
@@ -343,8 +408,19 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return salesOrders.get(input.salesOrderId) ?? null;
   }
 
+  async listSalesOrders(input: ListSalesOrdersInput = {}) {
+    const customerQuery = normalize(input.customerQuery ?? "");
+    const take = input.take ?? 25;
+    return Array.from(salesOrders.values())
+      .filter((order) => !input.status || order.status === input.status)
+      .filter((order) => isInsideDateRange(order.createdAt, input.dateRange ?? "all_time"))
+      .filter((order) => !customerQuery || normalize(order.customer.name).includes(customerQuery))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, take);
+  }
+
   async listRecentOrders() {
-    return Array.from(salesOrders.values()).slice(-10).reverse();
+    return this.listSalesOrders({ take: 10 });
   }
 
   async getTraditionalErpFlow() {

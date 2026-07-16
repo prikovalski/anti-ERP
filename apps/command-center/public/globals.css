@@ -530,6 +530,66 @@ p {
   font-weight: 650;
 }
 
+.result-table-shell {
+  overflow: auto;
+  border: 1px solid #cfd7df;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.result-table-row {
+  display: grid;
+  min-width: 720px;
+  border-top: 1px solid #e5e9ee;
+}
+
+.result-table-row:first-child {
+  border-top: 0;
+}
+
+.result-table-row > span {
+  min-height: 42px;
+  overflow-wrap: anywhere;
+  border-left: 1px solid #e5e9ee;
+  color: #26313f;
+  padding: 11px 12px;
+}
+
+.result-table-row > span:first-child {
+  border-left: 0;
+  color: #111827;
+  font-weight: 800;
+}
+
+.result-table-row > span:last-child {
+  color: #0d5f52;
+  font-weight: 850;
+  text-align: right;
+}
+
+.result-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #eef3f7;
+}
+
+.result-table-head > span {
+  color: #344054;
+  font-size: 0.74rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.result-table-head > span:last-child {
+  color: #344054;
+}
+
+.result-table-row:not(.result-table-head):nth-child(odd) {
+  background: #fbfcfd;
+}
+
 .plan-step-list {
   display: grid;
   gap: 10px;

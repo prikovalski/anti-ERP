@@ -2,6 +2,7 @@ import {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  ListSalesOrdersInput,
   Product,
   SalesOrder,
   SalesOrderLine,
@@ -38,6 +39,23 @@ type DbSupplier = {
   id: string;
   name: string;
   status: "active" | "blocked";
+};
+
+type RawSalesOrderRow = {
+  order_id: string;
+  order_status: string;
+  order_created_at: Date;
+  customer_id: string;
+  customer_name: string;
+  customer_tax_id: string;
+  customer_city: string;
+  customer_status: "active" | "blocked";
+  product_id: string | null;
+  product_sku: string | null;
+  product_name: string | null;
+  line_quantity: number | null;
+  line_unit_price_cents: number | null;
+  line_total_cents: number | null;
 };
 
 const globalForPrisma = globalThis as unknown as {
@@ -129,7 +147,7 @@ function mapSupplier(supplier: {
 
 function mapSalesOrder(order: {
   id: string;
-  status: "draft" | "confirmed";
+  status: "draft" | "confirmed" | "canceled";
   createdAt: Date;
   customer: {
     id: string;
@@ -168,6 +186,110 @@ function mapSalesOrder(order: {
     status: order.status,
     createdAt: order.createdAt.toISOString()
   };
+}
+
+function mapRawSalesOrderRows(rows: RawSalesOrderRow[]): SalesOrder[] {
+  const orders = new Map<string, SalesOrder>();
+  for (const row of rows) {
+    if (!orders.has(row.order_id)) {
+      orders.set(row.order_id, {
+        id: row.order_id,
+        customer: {
+          id: row.customer_id,
+          name: row.customer_name,
+          taxId: row.customer_tax_id,
+          city: row.customer_city,
+          status: row.customer_status
+        },
+        lines: [],
+        subtotal: 0,
+        warnings: [],
+        confirmationRequired: true,
+        status: row.order_status as SalesOrder["status"],
+        createdAt: row.order_created_at.toISOString()
+      });
+    }
+
+    const order = orders.get(row.order_id)!;
+    if (row.product_id && row.product_sku && row.product_name && row.line_quantity !== null) {
+      order.lines.push({
+        productId: row.product_id,
+        sku: row.product_sku,
+        name: row.product_name,
+        quantity: row.line_quantity,
+        unitPrice: fromCents(row.line_unit_price_cents ?? 0),
+        total: fromCents(row.line_total_cents ?? 0)
+      });
+    }
+  }
+
+  for (const order of orders.values()) {
+    order.subtotal = order.lines.reduce((sum, line) => sum + line.total, 0);
+  }
+  return Array.from(orders.values());
+}
+
+async function fetchSalesOrdersRaw(input: ListSalesOrdersInput & { salesOrderId?: string | null } = {}) {
+  const range = resolveDateRange(input.dateRange ?? "all_time");
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (input.salesOrderId) {
+    params.push(input.salesOrderId);
+    conditions.push(`so.id = $${params.length}`);
+  }
+  if (range) {
+    params.push(range.start);
+    conditions.push(`so."createdAt" >= $${params.length}`);
+    params.push(range.end);
+    conditions.push(`so."createdAt" < $${params.length}`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = await prisma.$queryRawUnsafe<RawSalesOrderRow[]>(
+    `
+      SELECT
+        so.id AS order_id,
+        so.status::text AS order_status,
+        so."createdAt" AS order_created_at,
+        c.id AS customer_id,
+        c.name AS customer_name,
+        c."taxId" AS customer_tax_id,
+        c.city AS customer_city,
+        c.status::text AS customer_status,
+        p.id AS product_id,
+        p.sku AS product_sku,
+        p.name AS product_name,
+        sol.quantity AS line_quantity,
+        sol."unitPriceCents" AS line_unit_price_cents,
+        sol."totalCents" AS line_total_cents
+      FROM "SalesOrder" so
+      JOIN "Customer" c ON c.id = so."customerId"
+      LEFT JOIN "SalesOrderLine" sol ON sol."salesOrderId" = so.id
+      LEFT JOIN "Product" p ON p.id = sol."productId"
+      ${where}
+      ORDER BY so."createdAt" DESC, sol.id ASC
+      LIMIT 500
+    `,
+    ...params
+  );
+  const customerQuery = normalize(input.customerQuery ?? "");
+  return mapRawSalesOrderRows(rows)
+    .filter((order) => !input.status || order.status === input.status)
+    .filter((order) => !customerQuery || normalize(order.customer.name).includes(customerQuery))
+    .slice(0, input.take ?? 25);
+}
+
+async function fetchSalesOrderRaw(salesOrderId: string) {
+  return (await fetchSalesOrdersRaw({ salesOrderId, take: 1 }))[0] ?? null;
+}
+
+async function assertSalesOrderCanChange(salesOrderId: string) {
+  const order = await fetchSalesOrderRaw(salesOrderId);
+  if (!order) {
+    throw new Error(`Sales order ${salesOrderId} not found.`);
+  }
+  if (order.status === "canceled") {
+    throw new Error(`Sales order ${salesOrderId} is canceled and cannot be changed.`);
+  }
 }
 
 async function audit(action: string, summary: string, metadata?: Prisma.InputJsonObject) {
@@ -518,6 +640,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     quantity: number;
   }) {
     await ensureSeeded();
+    await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const existingOrder = await tx.salesOrder.findUniqueOrThrow({
         where: { id: input.salesOrderId },
@@ -530,6 +653,9 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
+      if (existingOrder.status === "canceled") {
+        throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
+      }
       const product = (await tx.product.findUniqueOrThrow({
         where: { id: input.productId }
       })) as DbProduct;
@@ -596,6 +722,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     quantity: number;
   }) {
     await ensureSeeded();
+    await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const existingOrder = await tx.salesOrder.findUniqueOrThrow({
         where: { id: input.salesOrderId },
@@ -608,6 +735,9 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
+      if (existingOrder.status === "canceled") {
+        throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
+      }
       const currentLine = existingOrder.lines.find((line) => line.productId === input.productId);
       if (!currentLine) {
         throw new Error(`Product ${input.productId} is not in sales order ${input.salesOrderId}.`);
@@ -683,6 +813,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     productId: string;
   }) {
     await ensureSeeded();
+    await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const existingOrder = await tx.salesOrder.findUniqueOrThrow({
         where: { id: input.salesOrderId },
@@ -695,6 +826,9 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
+      if (existingOrder.status === "canceled") {
+        throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
+      }
       const currentLine = existingOrder.lines.find((line) => line.productId === input.productId);
       if (!currentLine) {
         throw new Error(`Product ${input.productId} is not in sales order ${input.salesOrderId}.`);
@@ -731,6 +865,136 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     await audit("remove_sales_order_line", `Removed item from sales order ${order.id}`, {
       salesOrderId: order.id,
       productId: input.productId
+    });
+    return mapSalesOrder(order);
+  }
+
+  async cancelSalesOrder(input: { salesOrderId: string }) {
+    await ensureSeeded();
+    const currentOrder = await fetchSalesOrderRaw(input.salesOrderId);
+    if (!currentOrder) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    if (currentOrder.status === "canceled") {
+      await audit("cancel_sales_order", `Sales order ${currentOrder.id} was already canceled`, {
+        salesOrderId: currentOrder.id
+      });
+      return currentOrder;
+    }
+
+    const salesOrderId = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      const existingOrder = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: input.salesOrderId },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+
+      if (existingOrder.status !== "canceled") {
+        for (const line of existingOrder.lines) {
+          await tx.product.update({
+            where: { id: line.productId },
+            data: {
+              availableStock: {
+                increment: line.quantity
+              }
+            }
+          });
+        }
+
+        await tx.$executeRawUnsafe(
+          'UPDATE "SalesOrder" SET status = $1::"SalesOrderStatus" WHERE id = $2',
+          "canceled",
+          existingOrder.id
+        );
+      }
+
+      return existingOrder.id;
+    });
+
+    const order = await fetchSalesOrderRaw(salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${salesOrderId} not found after cancellation.`);
+    }
+    await audit("cancel_sales_order", `Canceled sales order ${order.id}`, {
+      salesOrderId: order.id
+    });
+    return order;
+  }
+
+  async duplicateSalesOrder(input: { salesOrderId: string }) {
+    await ensureSeeded();
+    await assertSalesOrderCanChange(input.salesOrderId);
+    const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      const sourceOrder = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: input.salesOrderId },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+
+      if (sourceOrder.lines.length === 0) {
+        throw new Error(`Sales order ${input.salesOrderId} has no items to duplicate.`);
+      }
+
+      for (const line of sourceOrder.lines) {
+        if (line.product.availableStock < line.quantity) {
+          throw new Error(`${line.product.sku} has only ${line.product.availableStock} units available.`);
+        }
+      }
+
+      const id = await nextBusinessId(tx, "sales_order", "SO", 1001);
+      const duplicatedOrder = await tx.salesOrder.create({
+        data: {
+          id,
+          customerId: sourceOrder.customerId,
+          status: "confirmed",
+          lines: {
+            create: sourceOrder.lines.map((line) => ({
+              productId: line.productId,
+              quantity: line.quantity,
+              unitPriceCents: line.unitPriceCents,
+              totalCents: line.unitPriceCents * line.quantity
+            }))
+          }
+        },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+
+      for (const line of sourceOrder.lines) {
+        await tx.product.update({
+          where: { id: line.productId },
+          data: {
+            availableStock: {
+              decrement: line.quantity
+            }
+          }
+        });
+      }
+
+      return duplicatedOrder;
+    });
+
+    await audit("duplicate_sales_order", `Duplicated sales order ${input.salesOrderId} as ${order.id}`, {
+      sourceSalesOrderId: input.salesOrderId,
+      salesOrderId: order.id
     });
     return mapSalesOrder(order);
   }
@@ -781,39 +1045,26 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
   async getSalesOrder(input: { salesOrderId: string }) {
     await ensureSeeded();
-    const order = await prisma.salesOrder.findUnique({
-      where: { id: input.salesOrderId },
-      include: {
-        customer: true,
-        lines: {
-          include: {
-            product: true
-          }
-        }
-      }
-    });
+    const order = await fetchSalesOrderRaw(input.salesOrderId);
     await audit("get_sales_order", `Fetched sales order ${input.salesOrderId}`);
-    return order ? mapSalesOrder(order) : null;
+    return order;
+  }
+
+  async listSalesOrders(input: ListSalesOrdersInput = {}) {
+    await ensureSeeded();
+    const orders = await fetchSalesOrdersRaw(input);
+    const take = input.take ?? 25;
+    await audit("list_sales_orders", "Listed sales orders", {
+      customerQuery: input.customerQuery ?? null,
+      dateRange: input.dateRange ?? "all_time",
+      status: input.status ?? null,
+      resultCount: orders.length
+    });
+    return orders.slice(0, take);
   }
 
   async listRecentOrders() {
-    await ensureSeeded();
-    const orders = await prisma.salesOrder.findMany({
-      orderBy: {
-        createdAt: "desc"
-      },
-      take: 10,
-      include: {
-        customer: true,
-        lines: {
-          include: {
-            product: true
-          }
-        }
-      }
-    });
-    await audit("list_recent_orders", "Listed recent sales orders");
-    return orders.map(mapSalesOrder);
+    return this.listSalesOrders({ take: 10 });
   }
 
   async getTraditionalErpFlow() {
@@ -850,26 +1101,12 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     groupBy?: "product" | "customer" | "day" | null;
   }) {
     await ensureSeeded();
-    const range = resolveDateRange(input.dateRange);
     const productQueries = normalizeProductQueries(input.productQuery, input.productQueries);
     const customerQuery = normalize(input.customerQuery ?? "");
-    const orders = await prisma.salesOrder.findMany({
-      where: range
-        ? {
-            createdAt: {
-              gte: range.start,
-              lt: range.end
-            }
-          }
-        : undefined,
-      include: {
-        customer: true,
-        lines: {
-          include: {
-            product: true
-          }
-        }
-      }
+    const orders = await fetchSalesOrdersRaw({
+      dateRange: input.dateRange,
+      status: "confirmed",
+      take: 100
     });
 
     const filteredOrders = orders.filter((order) => {
@@ -878,8 +1115,8 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
         ? order.lines.some(
             (line) =>
               productQueries.some((productQuery) =>
-                normalize(line.product.name).includes(productQuery) ||
-                normalize(line.product.sku).includes(productQuery)
+                normalize(line.name).includes(productQuery) ||
+                normalize(line.sku).includes(productQuery)
               )
           )
         : true;
@@ -890,8 +1127,8 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       order.lines.filter((line) =>
         productQueries.length
           ? productQueries.some((productQuery) =>
-              normalize(line.product.name).includes(productQuery) ||
-              normalize(line.product.sku).includes(productQuery)
+              normalize(line.name).includes(productQuery) ||
+              normalize(line.sku).includes(productQuery)
             )
           : true
       )
@@ -901,10 +1138,23 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       input.metric === "units_sold"
         ? filteredLines.reduce((sum, line) => sum + line.quantity, 0)
         : input.metric === "revenue"
-          ? fromCents(filteredLines.reduce((sum, line) => sum + line.totalCents, 0))
+          ? filteredLines.reduce((sum, line) => sum + line.total, 0)
           : filteredOrders.length;
 
-    const rows = buildMetricRows(input.groupBy, input.metric, filteredOrders, productQueries);
+    const rows = buildMetricRows(
+      input.groupBy,
+      input.metric,
+      filteredOrders.map((order) => ({
+        createdAt: new Date(order.createdAt),
+        customer: { name: order.customer.name },
+        lines: order.lines.map((line) => ({
+          quantity: line.quantity,
+          totalCents: toCents(line.total),
+          product: { name: line.name, sku: line.sku }
+        }))
+      })),
+      productQueries
+    );
     await audit("query_sales_metrics", `Queried ${input.metric} for ${input.dateRange}`, {
       metric: input.metric,
       productQuery: input.productQuery ?? null,

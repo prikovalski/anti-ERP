@@ -41,7 +41,7 @@ export const SalesOrderPreviewSchema = z.object({
 
 export const SalesOrderSchema = SalesOrderPreviewSchema.extend({
   id: z.string(),
-  status: z.enum(["draft", "confirmed"]),
+  status: z.enum(["draft", "confirmed", "canceled"]),
   createdAt: z.string()
 });
 
@@ -132,12 +132,29 @@ export const RemoveSalesOrderLineInputSchema = z.object({
   productId: z.string()
 });
 
+export const CancelSalesOrderInputSchema = z.object({
+  salesOrderId: z.string()
+});
+
+export const DuplicateSalesOrderInputSchema = z.object({
+  salesOrderId: z.string()
+});
+
 export const CreateConceptInvoiceInputSchema = z.object({
   salesOrderId: z.string()
 });
 
 export const GetSalesOrderInputSchema = z.object({
   salesOrderId: z.string()
+});
+
+export const SalesOrderStatusSchema = z.enum(["draft", "confirmed", "canceled"]);
+
+export const ListSalesOrdersInputSchema = z.object({
+  customerQuery: z.string().nullable().optional(),
+  dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+  status: SalesOrderStatusSchema.nullable().optional(),
+  take: z.number().int().positive().max(100).nullable().optional()
 });
 
 export const AnalyticsMetricSchema = z.enum(["units_sold", "revenue", "order_count"]);
@@ -336,6 +353,10 @@ export type ListLowStockProductsInput = z.infer<typeof ListLowStockProductsInput
 export type AddSalesOrderLineInput = z.infer<typeof AddSalesOrderLineInputSchema>;
 export type SetSalesOrderLineQuantityInput = z.infer<typeof SetSalesOrderLineQuantityInputSchema>;
 export type RemoveSalesOrderLineInput = z.infer<typeof RemoveSalesOrderLineInputSchema>;
+export type CancelSalesOrderInput = z.infer<typeof CancelSalesOrderInputSchema>;
+export type DuplicateSalesOrderInput = z.infer<typeof DuplicateSalesOrderInputSchema>;
+export type SalesOrderStatus = z.infer<typeof SalesOrderStatusSchema>;
+export type ListSalesOrdersInput = z.infer<typeof ListSalesOrdersInputSchema>;
 export type SalesOrderLine = z.infer<typeof SalesOrderLineSchema>;
 export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;

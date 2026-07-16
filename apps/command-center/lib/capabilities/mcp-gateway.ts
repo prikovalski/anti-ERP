@@ -4,6 +4,7 @@ import {
   ProductSchema,
   SupplierSchema,
   AnalyticsResultSchema,
+  ListSalesOrdersInputSchema,
   SalesOrderPreviewSchema,
   SalesOrderSchema
 } from "@anti-erp/shared";
@@ -39,7 +40,10 @@ const salesOrderTools = new Set([
   "add_sales_order_line",
   "set_sales_order_line_quantity",
   "remove_sales_order_line",
+  "cancel_sales_order",
+  "duplicate_sales_order",
   "get_sales_order",
+  "list_sales_orders",
   "list_recent_orders"
 ]);
 const invoiceTools = new Set(["create_concept_invoice"]);
@@ -335,12 +339,24 @@ export class McpCapabilityGateway implements CapabilityGateway {
     return callTool("remove_sales_order_line", input, SalesOrderSchema);
   }
 
+  async cancelSalesOrder(input: { salesOrderId: string }) {
+    return callTool("cancel_sales_order", input, SalesOrderSchema);
+  }
+
+  async duplicateSalesOrder(input: { salesOrderId: string }) {
+    return callTool("duplicate_sales_order", input, SalesOrderSchema);
+  }
+
   async createConceptInvoice(input: { salesOrderId: string }) {
     return callTool("create_concept_invoice", input, ConceptInvoiceSchema);
   }
 
   async getSalesOrder(input: { salesOrderId: string }) {
     return callTool("get_sales_order", input, SalesOrderSchema.nullable());
+  }
+
+  async listSalesOrders(input: z.infer<typeof ListSalesOrdersInputSchema> = {}) {
+    return callTool("list_sales_orders", input, z.array(SalesOrderSchema));
   }
 
   async listRecentOrders() {

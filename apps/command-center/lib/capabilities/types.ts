@@ -5,6 +5,7 @@ import type {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  ListSalesOrdersInput,
   Product,
   SalesOrder,
   SalesOrderPreview,
@@ -52,8 +53,11 @@ export interface CapabilityGateway {
     salesOrderId: string;
     productId: string;
   }): Promise<SalesOrder>;
+  cancelSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
+  duplicateSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
   createConceptInvoice(input: { salesOrderId: string }): Promise<ConceptInvoice>;
   getSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder | null>;
+  listSalesOrders(input?: ListSalesOrdersInput): Promise<SalesOrder[]>;
   listRecentOrders(): Promise<SalesOrder[]>;
   getTraditionalErpFlow(): Promise<{
     traditional: string[];

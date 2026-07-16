@@ -31,6 +31,12 @@ type DocumentMessage = {
   title: string;
 };
 
+type ResultTable = {
+  title: string;
+  columns: string[];
+  rows: string[][];
+};
+
 const emptyConversationContext: ConversationContext = {
   activeOrderId: null,
   activeInvoiceId: null,
@@ -429,6 +435,7 @@ function EmptyDocument() {
 }
 
 function GenericResultDocument({ document }: { document: DocumentMessage }) {
+  const table = parseResultTable(document);
   const items = extractResultItems(document.text);
 
   return (
@@ -440,7 +447,9 @@ function GenericResultDocument({ document }: { document: DocumentMessage }) {
         status="Concluido"
       />
       <p className="result-summary">{getResultSummary(document.text)}</p>
-      {items.length > 0 ? (
+      {table ? (
+        <ResultTableView table={table} />
+      ) : items.length > 0 ? (
         <div className="result-list">
           {items.map((item, index) => (
             <div key={`${document.id}-${index}-${item}`}>
@@ -450,6 +459,34 @@ function GenericResultDocument({ document }: { document: DocumentMessage }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+function ResultTableView({ table }: { table: ResultTable }) {
+  return (
+    <div className="result-table-shell" role="table" aria-label={table.title}>
+      <div
+        className="result-table-row result-table-head"
+        role="row"
+        style={{ gridTemplateColumns: buildResultTableColumns(table.columns.length) }}
+      >
+        {table.columns.map((column) => (
+          <span key={column} role="columnheader">{column}</span>
+        ))}
+      </div>
+      {table.rows.map((row, rowIndex) => (
+        <div
+          key={`${table.title}-${rowIndex}-${row.join("|")}`}
+          className="result-table-row"
+          role="row"
+          style={{ gridTemplateColumns: buildResultTableColumns(table.columns.length) }}
+        >
+          {row.map((cell, cellIndex) => (
+            <span key={`${cellIndex}-${cell}`} role="cell">{cell}</span>
+          ))}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -818,7 +855,7 @@ function inferDocumentTitle(response: AgentResponse) {
   if (firstAuditAction.includes("create_supplier") || text.includes("fornecedor")) {
     return "Cadastro de fornecedor";
   }
-  if (firstAuditAction.includes("list_recent_orders") || text.includes("pedido")) {
+  if (firstAuditAction.includes("list_sales_orders") || firstAuditAction.includes("list_recent_orders") || text.includes("pedido")) {
     return "Lista de pedidos";
   }
   return "Resultado da solicitacao";
@@ -841,4 +878,82 @@ function extractResultItems(text: string) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseResultTable(document: DocumentMessage): ResultTable | null {
+  if (document.title === "Lista de pedidos") {
+    return parseSalesOrderList(document.text);
+  }
+  if (document.title === "Cadastro de cliente" && document.text.toLowerCase().includes("cliente(s):")) {
+    return parseCustomerList(document.text);
+  }
+  return null;
+}
+
+function parseSalesOrderList(text: string): ResultTable | null {
+  const items = extractSemicolonItems(text);
+  const rows = items
+    .map((item) => {
+      const match = item.match(/^(SO-\d+)\s+para\s+(.+?)\s+\((.+?)\)$/i);
+      if (!match) {
+        return null;
+      }
+      const details = match[3] ?? "";
+      const detailParts = details.split(",").map((part) => part.trim());
+      const total = detailParts.find((part) => /^total\s+/i.test(part))?.replace(/^total\s+/i, "") ?? "-";
+      const status = detailParts.find((part) => /^(confirmado|cancelado|rascunho)$/i.test(part)) ?? "-";
+      const itemCount = detailParts.find((part) => /item/i.test(part)) ?? "-";
+      return [match[1] ?? "-", match[2] ?? "-", status, itemCount, total];
+    })
+    .filter((row): row is string[] => Boolean(row));
+
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    title: "Pedidos",
+    columns: ["Pedido", "Cliente", "Status", "Itens", "Total"],
+    rows
+  };
+}
+
+function parseCustomerList(text: string): ResultTable | null {
+  const items = extractSemicolonItems(text);
+  const rows = items
+    .map((item) => {
+      const match = item.match(/^(.+?)\s+\((.+?),\s*(ativo|bloqueado)\)$/i);
+      if (!match) {
+        return null;
+      }
+      return [match[1] ?? "-", match[2] ?? "-", match[3] ?? "-"];
+    })
+    .filter((row): row is string[] => Boolean(row));
+
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    title: "Clientes",
+    columns: ["Cliente", "Cidade", "Status"],
+    rows
+  };
+}
+
+function extractSemicolonItems(text: string) {
+  const listSegment = text.includes(":") ? text.slice(text.indexOf(":") + 1) : "";
+  return listSegment
+    .replace(/\.\s*$/, "")
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildResultTableColumns(count: number) {
+  if (count === 5) {
+    return "130px minmax(220px, 1fr) 130px 120px 150px";
+  }
+  if (count === 3) {
+    return "minmax(240px, 1fr) 180px 130px";
+  }
+  return `repeat(${count}, minmax(140px, 1fr))`;
 }

@@ -81,8 +81,27 @@ export function registerSalesOrderTools(server: McpServer, gateway: CapabilityGa
     async (input) => json(await gateway.removeSalesOrderLine(input))
   );
 
+  server.tool("cancel_sales_order", { salesOrderId: z.string() }, async (input) =>
+    json(await gateway.cancelSalesOrder(input))
+  );
+
+  server.tool("duplicate_sales_order", { salesOrderId: z.string() }, async (input) =>
+    json(await gateway.duplicateSalesOrder(input))
+  );
+
   server.tool("get_sales_order", { salesOrderId: z.string() }, async (input) =>
     json(await gateway.getSalesOrder(input))
+  );
+
+  server.tool(
+    "list_sales_orders",
+    {
+      customerQuery: z.string().nullable().optional(),
+      dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+      status: z.enum(["draft", "confirmed", "canceled"]).nullable().optional(),
+      take: z.number().int().positive().max(100).nullable().optional()
+    },
+    async (input) => json(await gateway.listSalesOrders(input))
   );
 
   server.tool("list_recent_orders", {}, async () => json(await gateway.listRecentOrders()));

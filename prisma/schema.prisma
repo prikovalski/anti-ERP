@@ -112,4 +112,5 @@ enum SupplierStatus {
 enum SalesOrderStatus {
   draft
   confirmed
+  canceled
 }
