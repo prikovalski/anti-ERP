@@ -24,6 +24,7 @@ model Product {
   name           String
   unitPriceCents Int
   availableStock Int
+  status         String           @default("active")
   salesOrderLines SalesOrderLine[]
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt

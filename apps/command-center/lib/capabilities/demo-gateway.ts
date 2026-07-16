@@ -3,6 +3,7 @@ import {
   ConceptInvoice,
   ListConceptInvoicesInput,
   ListSalesOrdersInput,
+  SearchCatalogInput,
   SalesOrder,
   SalesOrderPreview,
   Supplier,
@@ -53,6 +54,27 @@ function randomToken() {
   return Math.random().toString(36).slice(2, 8);
 }
 
+function filterCatalogRecords<T extends { name: string; status?: string; sku?: string; taxId?: string }>(
+  records: T[],
+  input: SearchCatalogInput = {}
+) {
+  const query = normalize(input.query ?? "");
+  const status = input.status === "inactive" ? "blocked" : input.status;
+  return records
+    .filter((record) => {
+      if (status && record.status && record.status !== status && !(input.status === "inactive" && record.status === "inactive")) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return normalize(record.name).includes(query)
+        || Boolean(record.sku && normalize(record.sku).includes(query))
+        || Boolean(record.taxId && normalize(record.taxId).includes(query));
+    })
+    .slice(0, input.take ?? 25);
+}
+
 export class DemoCapabilityGateway implements CapabilityGateway {
   private customers = [...demoCustomers];
   private products = [...demoProducts];
@@ -75,8 +97,39 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return customer;
   }
 
+  async updateCustomer(input: {
+    customerId: string;
+    name?: string | null;
+    city?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
+  }) {
+    const customer = this.customers.find((candidate) => candidate.id === input.customerId);
+    if (!customer) {
+      throw new Error(`Customer ${input.customerId} not found.`);
+    }
+    if (input.name !== undefined && input.name !== null) {
+      const name = cleanName(input.name);
+      const existing = this.customers.find((candidate) => candidate.id !== customer.id && normalize(candidate.name) === normalize(name));
+      if (existing) {
+        throw new Error(`Customer "${existing.name}" already exists.`);
+      }
+      customer.name = name;
+    }
+    if (input.city !== undefined && input.city !== null) {
+      customer.city = cleanName(input.city);
+    }
+    if (input.status) {
+      customer.status = input.status === "active" ? "active" : "blocked";
+    }
+    return customer;
+  }
+
   async listCustomers() {
     return [...this.customers].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async searchCustomersAdvanced(input: SearchCatalogInput = {}) {
+    return filterCatalogRecords(this.customers, input);
   }
 
   async createProduct(input: { name: string }) {
@@ -91,10 +144,15 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       sku: `SKU-${slugify(name).replaceAll("_", "-").toUpperCase() || "ITEM"}-${randomToken().toUpperCase()}`,
       name,
       unitPrice: 0,
-      availableStock: 0
+      availableStock: 0,
+      status: "active" as const
     };
     this.products.push(product);
     return product;
+  }
+
+  async listProducts(input: SearchCatalogInput = {}) {
+    return filterCatalogRecords(this.products, input);
   }
 
   async createSupplier(input: { name: string }) {
@@ -113,20 +171,65 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return supplier;
   }
 
+  async updateSupplier(input: {
+    supplierId: string;
+    name?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
+  }) {
+    const supplier = suppliers.get(input.supplierId);
+    if (!supplier) {
+      throw new Error(`Supplier ${input.supplierId} not found.`);
+    }
+    if (input.name !== undefined && input.name !== null) {
+      const name = cleanName(input.name);
+      const existing = Array.from(suppliers.values()).find((candidate) => candidate.id !== supplier.id && normalize(candidate.name) === normalize(name));
+      if (existing) {
+        throw new Error(`Supplier "${existing.name}" already exists.`);
+      }
+      supplier.name = name;
+    }
+    if (input.status) {
+      supplier.status = input.status === "active" ? "active" : "blocked";
+    }
+    suppliers.set(supplier.id, supplier);
+    return supplier;
+  }
+
+  async searchSupplier(input: { query: string }) {
+    return this.listSuppliers({ query: input.query });
+  }
+
+  async listSuppliers(input: SearchCatalogInput = {}) {
+    return filterCatalogRecords(Array.from(suppliers.values()), input);
+  }
+
   async updateProduct(input: {
     productId: string;
+    name?: string | null;
     unitPrice?: number | null;
     availableStock?: number | null;
+    status?: "active" | "inactive" | null;
   }) {
     const product = this.products.find((candidate) => candidate.id === input.productId);
     if (!product) {
       throw new Error(`Product ${input.productId} not found.`);
+    }
+    if (input.name !== undefined && input.name !== null) {
+      const name = cleanName(input.name);
+      const existing = this.products.find((candidate) => candidate.id !== product.id && normalize(candidate.name) === normalize(name));
+      if (existing) {
+        throw new Error(`Product "${existing.name}" already exists.`);
+      }
+      product.name = name;
     }
     if (input.unitPrice !== undefined && input.unitPrice !== null) {
       product.unitPrice = input.unitPrice;
     }
     if (input.availableStock !== undefined && input.availableStock !== null) {
       product.availableStock = input.availableStock;
+    }
+    if (input.status !== undefined && input.status !== null) {
+      product.status = input.status;
     }
     return product;
   }
@@ -139,10 +242,11 @@ export class DemoCapabilityGateway implements CapabilityGateway {
   }
 
   async searchProduct(input: { query: string }) {
-    const query = normalize(input.query);
-    return this.products.filter(
-      (product) => normalize(product.name).includes(query) || normalize(product.sku).includes(query)
-    );
+    return this.searchProductsAdvanced({ query: input.query });
+  }
+
+  async searchProductsAdvanced(input: SearchCatalogInput = {}) {
+    return this.listProducts(input);
   }
 
   async validateStock(input: { productId: string; quantity: number }) {

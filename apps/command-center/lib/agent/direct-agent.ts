@@ -5,10 +5,13 @@ import type {
   AnalyticsMetric,
   ConceptInvoice,
   ConceptInvoiceStatus,
+  Customer,
   ListConceptInvoicesInput,
   ListSalesOrdersInput,
+  Product,
   SalesOrder,
-  SalesOrderStatus
+  SalesOrderStatus,
+  Supplier
 } from "@anti-erp/shared";
 import { getCapabilityGateway } from "../capabilities";
 import { parseIntentLocally } from "./intent-parser";
@@ -43,19 +46,84 @@ function response(text: string, extra: Partial<AgentResponse> = {}): AgentRespon
 export async function runDirectAgent(input: { message: string; lastOrderId?: string | null }): Promise<AgentResponse> {
   if (asksToListCustomers(input.message)) {
     const gateway = await getCapabilityGateway();
-    const customers = await gateway.listCustomers();
-    const text = customers.length
-      ? `Encontrei ${customers.length} cliente(s): ${customers
-          .slice(0, 12)
-          .map((customer) => `${customer.name} (${customer.city}, ${customer.status === "active" ? "ativo" : "bloqueado"})`)
-          .join("; ")}.`
-      : "Nao encontrei clientes cadastrados.";
-    return response(text, {
-      auditEvents: [audit("list_customers", `Listados ${customers.length} cliente(s).`)]
+    const status = inferCatalogStatus(normalizeText(input.message));
+    const customers = await gateway.searchCustomersAdvanced({ status, take: 25 });
+    return response(formatCustomerList(customers), {
+      auditEvents: [audit("search_customers_advanced", `Listados ${customers.length} cliente(s).`)]
     });
   }
 
   const gateway = await getCapabilityGateway();
+  const explicitCatalogCommand = parseExplicitCatalogCommand(input.message);
+  if (explicitCatalogCommand.action === "list") {
+    if (explicitCatalogCommand.kind === "product") {
+      const products = await gateway.listProducts({ query: explicitCatalogCommand.query, status: explicitCatalogCommand.status, take: 25 });
+      return response(formatProductList(products), {
+        auditEvents: [audit("list_products", `Listados ${products.length} produto(s).`)]
+      });
+    }
+    if (explicitCatalogCommand.kind === "supplier") {
+      const suppliers = await gateway.listSuppliers({ query: explicitCatalogCommand.query, status: explicitCatalogCommand.status, take: 25 });
+      return response(formatSupplierList(suppliers), {
+        auditEvents: [audit("list_suppliers", `Listados ${suppliers.length} fornecedor(es).`)]
+      });
+    }
+    if (explicitCatalogCommand.kind === "customer") {
+      const customers = await gateway.searchCustomersAdvanced({ query: explicitCatalogCommand.query, status: explicitCatalogCommand.status, take: 25 });
+      return response(formatCustomerList(customers), {
+        auditEvents: [audit("search_customers_advanced", `Listados ${customers.length} cliente(s).`)]
+      });
+    }
+  }
+
+  if (explicitCatalogCommand.action === "set_status" && explicitCatalogCommand.query && explicitCatalogCommand.status) {
+    if (explicitCatalogCommand.kind === "product") {
+      const product = (await gateway.searchProduct({ query: explicitCatalogCommand.query }))[0];
+      if (!product) return response(`Nao encontrei o produto ${explicitCatalogCommand.query}.`);
+      const updated = await gateway.updateProduct({ productId: product.id, status: explicitCatalogCommand.status === "active" ? "active" : "inactive" });
+      return response(`Produto ${updated.name} ${updated.status === "active" ? "ativado" : "inativado"} com sucesso.`, {
+        auditEvents: [audit("update_product", `Status atualizado: ${updated.name}.`)]
+      });
+    }
+    if (explicitCatalogCommand.kind === "supplier") {
+      const supplier = (await gateway.searchSupplier({ query: explicitCatalogCommand.query }))[0];
+      if (!supplier) return response(`Nao encontrei o fornecedor ${explicitCatalogCommand.query}.`);
+      const updated = await gateway.updateSupplier({ supplierId: supplier.id, status: explicitCatalogCommand.status });
+      return response(`Fornecedor ${updated.name} ${updated.status === "active" ? "ativado" : "inativado"} com sucesso.`, {
+        auditEvents: [audit("update_supplier", `Status atualizado: ${updated.name}.`)]
+      });
+    }
+    if (explicitCatalogCommand.kind === "customer") {
+      const customer = (await gateway.searchCustomer({ query: explicitCatalogCommand.query }))[0];
+      if (!customer) return response(`Nao encontrei o cliente ${explicitCatalogCommand.query}.`);
+      const updated = await gateway.updateCustomer({ customerId: customer.id, status: explicitCatalogCommand.status });
+      return response(`Cliente ${updated.name} ${updated.status === "active" ? "ativado" : "inativado"} com sucesso.`, {
+        auditEvents: [audit("update_customer", `Status atualizado: ${updated.name}.`)]
+      });
+    }
+  }
+
+  if (explicitCatalogCommand.action === "rename" && explicitCatalogCommand.query && explicitCatalogCommand.nextName) {
+    if (explicitCatalogCommand.kind === "product") {
+      const product = (await gateway.searchProduct({ query: explicitCatalogCommand.query }))[0];
+      if (!product) return response(`Nao encontrei o produto ${explicitCatalogCommand.query}.`);
+      const updated = await gateway.updateProduct({ productId: product.id, name: explicitCatalogCommand.nextName });
+      return response(`Produto renomeado para ${updated.name}.`, { auditEvents: [audit("update_product", `Produto renomeado: ${updated.name}.`)] });
+    }
+    if (explicitCatalogCommand.kind === "supplier") {
+      const supplier = (await gateway.searchSupplier({ query: explicitCatalogCommand.query }))[0];
+      if (!supplier) return response(`Nao encontrei o fornecedor ${explicitCatalogCommand.query}.`);
+      const updated = await gateway.updateSupplier({ supplierId: supplier.id, name: explicitCatalogCommand.nextName });
+      return response(`Fornecedor renomeado para ${updated.name}.`, { auditEvents: [audit("update_supplier", `Fornecedor renomeado: ${updated.name}.`)] });
+    }
+    if (explicitCatalogCommand.kind === "customer") {
+      const customer = (await gateway.searchCustomer({ query: explicitCatalogCommand.query }))[0];
+      if (!customer) return response(`Nao encontrei o cliente ${explicitCatalogCommand.query}.`);
+      const updated = await gateway.updateCustomer({ customerId: customer.id, name: explicitCatalogCommand.nextName });
+      return response(`Cliente renomeado para ${updated.name}.`, { auditEvents: [audit("update_customer", `Cliente renomeado: ${updated.name}.`)] });
+    }
+  }
+
   const explicitInvoiceCommand = parseExplicitInvoiceCommand(input.message);
   if (explicitInvoiceCommand.action === "create") {
     const salesOrderId = explicitInvoiceCommand.salesOrderId ?? input.lastOrderId ?? null;
@@ -196,15 +264,22 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     if (!name) {
       return response("Qual nome devo cadastrar?");
     }
-    const record =
-      intent.intent === "create_customer"
-        ? await gateway.createCustomer({ name })
-        : intent.intent === "create_product"
-          ? await gateway.createProduct({ name })
-          : await gateway.createSupplier({ name });
-    return response(`${name} cadastrado com sucesso.`, {
-      auditEvents: [audit(intent.intent, `Cadastro criado: ${"name" in record ? record.name : name}.`)]
-    });
+    try {
+      const record =
+        intent.intent === "create_customer"
+          ? await gateway.createCustomer({ name })
+          : intent.intent === "create_product"
+            ? await gateway.createProduct({ name })
+            : await gateway.createSupplier({ name });
+      return response(`${name} cadastrado com sucesso.`, {
+        auditEvents: [audit(intent.intent, `Cadastro criado: ${"name" in record ? record.name : name}.`)]
+      });
+    } catch (error) {
+      if (error instanceof Error && /already exists/i.test(error.message)) {
+        return response(`Nao cadastrei ${name}, porque ja existe um cadastro com exatamente esse nome.`);
+      }
+      throw error;
+    }
   }
 
   if (intent.intent === "update_product" && intent.productUpdate?.productQuery) {
@@ -313,6 +388,74 @@ function parseExplicitOrderCommand(message: string): {
   return { action: null, salesOrderId, filters: {} };
 }
 
+function parseExplicitCatalogCommand(message: string): {
+  action: "list" | "set_status" | "rename" | null;
+  kind: "product" | "customer" | "supplier" | null;
+  query: string | null;
+  nextName: string | null;
+  status: "active" | "inactive" | "blocked" | null;
+} {
+  const normalized = normalizeText(message);
+  const kind = normalized.includes("fornecedor")
+    ? "supplier"
+    : normalized.includes("cliente")
+      ? "customer"
+      : normalized.includes("produto")
+        ? "product"
+        : null;
+  if (!kind) {
+    return { action: null, kind, query: null, nextName: null, status: null };
+  }
+  const status = /\b(inative|inativar|desative|desativar|bloqueie|bloquear|inativo|inativos)\b/.test(normalized)
+    ? "inactive"
+    : /\b(ative|ativar|ativo|ativos)\b/.test(normalized)
+      ? "active"
+      : null;
+  if (/\b(liste|listar|mostre|mostrar|exiba|exibir|busque|buscar|procure|procurar)\b/.test(normalized)) {
+    return {
+      action: "list",
+      kind,
+      query: extractCatalogQuery(message, kind),
+      nextName: null,
+      status
+    };
+  }
+  if (status) {
+    return {
+      action: "set_status",
+      kind,
+      query: extractCatalogQuery(message, kind),
+      nextName: null,
+      status
+    };
+  }
+  const renameMatch = message.match(/\b(?:renomeie|renomear|altere\s+o\s+nome\s+d[eo]?)\s+(?:o\s+|a\s+)?(?:produto|cliente|fornecedor)\s+(.+?)\s+(?:para|pra)\s+(.+)$/i);
+  if (renameMatch?.[1] && renameMatch[2]) {
+    return {
+      action: "rename",
+      kind,
+      query: cleanCatalogQuery(renameMatch[1]),
+      nextName: cleanCatalogQuery(renameMatch[2]),
+      status: null
+    };
+  }
+  return { action: null, kind, query: null, nextName: null, status: null };
+}
+
+function extractCatalogQuery(message: string, kind: "product" | "customer" | "supplier") {
+  const label = kind === "product" ? "produto" : kind === "customer" ? "cliente" : "fornecedor";
+  const match = message.match(new RegExp(`\\b${label}\\s+(.+?)(?:\\s+(?:ativo|ativos|inativo|inativos|bloqueado|bloqueados))?$`, "i"));
+  return match?.[1] ? cleanCatalogQuery(match[1]) : null;
+}
+
+function cleanCatalogQuery(value: string) {
+  return value
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/^(?:o|a|os|as|de|do|da|dos|das)\s+/i, "")
+    .replace(/[.!?]+$/g, "");
+}
+
 function parseExplicitInvoiceCommand(message: string): {
   action: "create" | "get" | "cancel" | "reissue" | "list" | null;
   invoiceId: string | null;
@@ -413,6 +556,16 @@ function inferOrderStatus(normalized: string): SalesOrderStatus | null {
   return null;
 }
 
+function inferCatalogStatus(normalized: string): "active" | "inactive" | null {
+  if (/\b(inativo|inativos|inativa|inativas|bloqueado|bloqueados|bloqueada|bloqueadas)\b/.test(normalized)) {
+    return "inactive";
+  }
+  if (/\b(ativo|ativos|ativa|ativas)\b/.test(normalized)) {
+    return "active";
+  }
+  return null;
+}
+
 function extractOrderCustomerFilter(message: string) {
   const match = message.match(
     /\b(?:cliente|clientes|para|da|do)\s+(.+?)(?=\s+(?:hoje|ontem|semana|mes|m[eê]s|confirmad|cancelad|rascunho|status|criados|recentes)\b|[.!?]?$)/i
@@ -466,6 +619,30 @@ function formatInvoiceList(invoices: ConceptInvoice[], filters: ListConceptInvoi
     .map((invoice) =>
       `${invoice.id} do pedido ${invoice.salesOrderId} para ${invoice.customerName} (${translateInvoiceStatus(invoice.status)}, valor ${formatMoney(invoice.amount)}, ${invoice.orderChangedAfterIssue ? "pedido alterado apos emissao" : "pedido sem alteracao"})`
     )
+    .join("; ")}.`;
+}
+
+function formatCustomerList(customers: Customer[]) {
+  if (!customers.length) return "Nao encontrei clientes para esses filtros.";
+  return `Encontrei ${customers.length} cliente(s): ${customers
+    .slice(0, 12)
+    .map((customer) => `${customer.name} (${customer.city}, ${customer.status === "active" ? "ativo" : "inativo"})`)
+    .join("; ")}.`;
+}
+
+function formatSupplierList(suppliers: Supplier[]) {
+  if (!suppliers.length) return "Nao encontrei fornecedores para esses filtros.";
+  return `Encontrei ${suppliers.length} fornecedor(es): ${suppliers
+    .slice(0, 12)
+    .map((supplier) => `${supplier.name} (${supplier.status === "active" ? "ativo" : "inativo"})`)
+    .join("; ")}.`;
+}
+
+function formatProductList(products: Product[]) {
+  if (!products.length) return "Nao encontrei produtos para esses filtros.";
+  return `Encontrei ${products.length} produto(s): ${products
+    .slice(0, 12)
+    .map((product) => `${product.name} (${product.sku}, ${product.status === "inactive" ? "inativo" : "ativo"}, estoque ${product.availableStock}, preco ${formatMoney(product.unitPrice)})`)
     .join("; ")}.`;
 }
 

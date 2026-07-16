@@ -13,7 +13,8 @@ export const ProductSchema = z.object({
   sku: z.string(),
   name: z.string(),
   unitPrice: z.number().nonnegative(),
-  availableStock: z.number().int().nonnegative()
+  availableStock: z.number().int().nonnegative(),
+  status: z.enum(["active", "inactive"]).default("active")
 });
 
 export const SupplierSchema = z.object({
@@ -91,10 +92,41 @@ export const CreateSupplierInputSchema = z.object({
 
 export const UpdateProductInputSchema = z.object({
   productId: z.string(),
+  name: z.string().trim().min(2).nullable().optional(),
   unitPrice: z.number().nonnegative().nullable().optional(),
-  availableStock: z.number().int().nonnegative().nullable().optional()
-}).refine((input) => input.unitPrice !== undefined || input.availableStock !== undefined, {
+  availableStock: z.number().int().nonnegative().nullable().optional(),
+  status: z.enum(["active", "inactive"]).nullable().optional()
+}).refine((input) =>
+  input.name !== undefined ||
+  input.unitPrice !== undefined ||
+  input.availableStock !== undefined ||
+  input.status !== undefined, {
   message: "At least one product field must be provided."
+});
+
+export const CatalogStatusInputSchema = z.enum(["active", "inactive", "blocked"]);
+
+export const UpdateCustomerInputSchema = z.object({
+  customerId: z.string(),
+  name: z.string().trim().min(2).nullable().optional(),
+  city: z.string().trim().min(2).nullable().optional(),
+  status: CatalogStatusInputSchema.nullable().optional()
+}).refine((input) => input.name !== undefined || input.city !== undefined || input.status !== undefined, {
+  message: "At least one customer field must be provided."
+});
+
+export const UpdateSupplierInputSchema = z.object({
+  supplierId: z.string(),
+  name: z.string().trim().min(2).nullable().optional(),
+  status: CatalogStatusInputSchema.nullable().optional()
+}).refine((input) => input.name !== undefined || input.status !== undefined, {
+  message: "At least one supplier field must be provided."
+});
+
+export const SearchCatalogInputSchema = z.object({
+  query: z.string().trim().min(1).nullable().optional(),
+  status: CatalogStatusInputSchema.nullable().optional(),
+  take: z.number().int().positive().max(100).nullable().optional()
 });
 
 export const ValidateStockInputSchema = z.object({
@@ -351,21 +383,24 @@ export const demoProducts: Product[] = [
     sku: "NB-AIR-14",
     name: "Notebook Air 14",
     unitPrice: 6200,
-    availableStock: 37
+    availableStock: 37,
+    status: "active"
   },
   {
     id: "prd_monitor_27",
     sku: "MON-27-4K",
     name: "Monitor 27 4K",
     unitPrice: 1950,
-    availableStock: 18
+    availableStock: 18,
+    status: "active"
   },
   {
     id: "prd_keyboard_pro",
     sku: "KEY-PRO-BR",
     name: "Teclado Pro ABNT2",
     unitPrice: 480,
-    availableStock: 52
+    availableStock: 52,
+    status: "active"
   }
 ];
 
@@ -376,6 +411,9 @@ export type CreateCustomerInput = z.infer<typeof CreateCustomerInputSchema>;
 export type CreateProductInput = z.infer<typeof CreateProductInputSchema>;
 export type CreateSupplierInput = z.infer<typeof CreateSupplierInputSchema>;
 export type UpdateProductInput = z.infer<typeof UpdateProductInputSchema>;
+export type UpdateCustomerInput = z.infer<typeof UpdateCustomerInputSchema>;
+export type UpdateSupplierInput = z.infer<typeof UpdateSupplierInputSchema>;
+export type SearchCatalogInput = z.infer<typeof SearchCatalogInputSchema>;
 export type ListLowStockProductsInput = z.infer<typeof ListLowStockProductsInputSchema>;
 export type AddSalesOrderLineInput = z.infer<typeof AddSalesOrderLineInputSchema>;
 export type SetSalesOrderLineQuantityInput = z.infer<typeof SetSalesOrderLineQuantityInputSchema>;

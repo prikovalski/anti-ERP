@@ -8,6 +8,7 @@ import {
   SalesOrder,
   SalesOrderLine,
   SalesOrderPreview,
+  SearchCatalogInput,
   Supplier,
   demoCustomers,
   demoProducts
@@ -34,6 +35,7 @@ type DbProduct = {
   name: string;
   unitPriceCents: number;
   availableStock: number;
+  status?: "active" | "inactive";
 };
 
 type DbSupplier = {
@@ -91,6 +93,7 @@ if (process.env.NODE_ENV !== "production") {
 
 let seedPromise: Promise<void> | null = null;
 let invoiceSchemaPromise: Promise<void> | null = null;
+let productSchemaPromise: Promise<void> | null = null;
 
 function ensureSeeded() {
   seedPromise ??= seedDemoData();
@@ -100,6 +103,13 @@ function ensureSeeded() {
 function ensureInvoiceSchema() {
   invoiceSchemaPromise ??= ensureConceptInvoiceColumns();
   return invoiceSchemaPromise;
+}
+
+function ensureProductSchema() {
+  productSchemaPromise ??= prisma
+    .$executeRawUnsafe('ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT \'active\'')
+    .then(() => undefined);
+  return productSchemaPromise;
 }
 
 function normalize(value: string) {
@@ -126,6 +136,13 @@ function randomToken() {
   return Math.random().toString(36).slice(2, 8);
 }
 
+function toDbCatalogStatus(status: "active" | "inactive" | "blocked" | null | undefined): "active" | "blocked" | undefined {
+  if (!status) {
+    return undefined;
+  }
+  return status === "active" ? "active" : "blocked";
+}
+
 function toCents(value: number) {
   return Math.round(value * 100);
 }
@@ -150,13 +167,15 @@ function mapProduct(product: {
   name: string;
   unitPriceCents: number;
   availableStock: number;
+  status?: "active" | "inactive" | string | null;
 }): Product {
   return {
     id: product.id,
     sku: product.sku,
     name: product.name,
     unitPrice: fromCents(product.unitPriceCents),
-    availableStock: product.availableStock
+    availableStock: product.availableStock,
+    status: product.status === "inactive" ? "inactive" : "active"
   };
 }
 
@@ -415,6 +434,44 @@ async function audit(action: string, summary: string, metadata?: Prisma.InputJso
   });
 }
 
+function filterByCatalogSearch<T extends { name: string; status?: string; sku?: string; taxId?: string }>(
+  records: T[],
+  input: SearchCatalogInput = {}
+) {
+  const query = normalize(input.query ?? "");
+  const dbStatus = toDbCatalogStatus(input.status);
+  const productStatus = input.status === "inactive" ? "inactive" : input.status === "active" ? "active" : undefined;
+  return records
+    .filter((record) => {
+      if (dbStatus && (record.status === "blocked" || record.status === "active") && record.status !== dbStatus) {
+        return false;
+      }
+      if (productStatus && record.status !== undefined && record.status !== "blocked" && record.status !== productStatus) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return normalize(record.name).includes(query)
+        || Boolean(record.sku && normalize(record.sku).includes(query))
+        || Boolean(record.taxId && normalize(record.taxId).includes(query));
+    })
+    .slice(0, input.take ?? 25);
+}
+
+function assertUniqueName<T extends { id: string; name: string }>(
+  records: T[],
+  nextName: string,
+  currentId: string | null,
+  label: string
+) {
+  const normalizedName = normalize(nextName);
+  const existing = records.find((record) => record.id !== currentId && normalize(record.name) === normalizedName);
+  if (existing) {
+    throw new Error(`${label} "${existing.name}" already exists.`);
+  }
+}
+
 async function seedDemoData() {
   await Promise.all([
     ...demoCustomers.map((customer) =>
@@ -512,6 +569,32 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return mapCustomer(customer);
   }
 
+  async updateCustomer(input: {
+    customerId: string;
+    name?: string | null;
+    city?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
+  }) {
+    await ensureSeeded();
+    const customers = (await prisma.customer.findMany()) as DbCustomer[];
+    const current = customers.find((customer) => customer.id === input.customerId);
+    if (!current) {
+      throw new Error(`Customer ${input.customerId} not found.`);
+    }
+    const nextName = input.name ? cleanName(input.name) : current.name;
+    assertUniqueName(customers, nextName, current.id, "Customer");
+    const customer = (await prisma.customer.update({
+      where: { id: input.customerId },
+      data: {
+        ...(input.name !== undefined && input.name !== null ? { name: nextName } : {}),
+        ...(input.city !== undefined && input.city !== null ? { city: cleanName(input.city) } : {}),
+        ...(input.status ? { status: toDbCatalogStatus(input.status) } : {})
+      }
+    })) as DbCustomer;
+    await audit("update_customer", `Updated customer ${customer.name}`, { customerId: customer.id });
+    return mapCustomer(customer);
+  }
+
   async listCustomers() {
     await ensureSeeded();
     const customers = (await prisma.customer.findMany({
@@ -523,15 +606,22 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return customers.map(mapCustomer);
   }
 
+  async searchCustomersAdvanced(input: SearchCatalogInput = {}) {
+    await ensureSeeded();
+    const customers = (await prisma.customer.findMany({
+      orderBy: { name: "asc" }
+    })) as DbCustomer[];
+    const matches = filterByCatalogSearch(customers, input);
+    await audit("search_customers_advanced", "Advanced customer search", { resultCount: matches.length });
+    return matches.map(mapCustomer);
+  }
+
   async createProduct(input: { name: string }) {
     await ensureSeeded();
+    await ensureProductSchema();
     const name = cleanName(input.name);
-    const normalizedName = normalize(name);
     const products = (await prisma.product.findMany()) as DbProduct[];
-    const existing = products.find((product) => normalize(product.name) === normalizedName);
-    if (existing) {
-      throw new Error(`Product "${existing.name}" already exists.`);
-    }
+    assertUniqueName(products, name, null, "Product");
 
     const product = (await prisma.product.create({
       data: {
@@ -545,6 +635,15 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
     await audit("create_product", `Created product ${product.name}`, { productId: product.id });
     return mapProduct(product);
+  }
+
+  async listProducts(input: SearchCatalogInput = {}) {
+    await ensureSeeded();
+    await ensureProductSchema();
+    const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", status FROM "Product" ORDER BY name ASC');
+    const matches = filterByCatalogSearch(products, input);
+    await audit("list_products", "Listed products", { resultCount: matches.length });
+    return matches.map(mapProduct);
   }
 
   async createSupplier(input: { name: string }) {
@@ -569,28 +668,90 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return mapSupplier(supplier);
   }
 
-  async updateProduct(input: {
-    productId: string;
-    unitPrice?: number | null;
-    availableStock?: number | null;
+  async updateSupplier(input: {
+    supplierId: string;
+    name?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
   }) {
     await ensureSeeded();
-    const product = (await prisma.product.update({
-      where: { id: input.productId },
+    const suppliers = (await prisma.supplier.findMany()) as DbSupplier[];
+    const current = suppliers.find((supplier) => supplier.id === input.supplierId);
+    if (!current) {
+      throw new Error(`Supplier ${input.supplierId} not found.`);
+    }
+    const nextName = input.name ? cleanName(input.name) : current.name;
+    assertUniqueName(suppliers, nextName, current.id, "Supplier");
+    const supplier = (await prisma.supplier.update({
+      where: { id: input.supplierId },
       data: {
-        ...(input.unitPrice !== undefined && input.unitPrice !== null
-          ? { unitPriceCents: toCents(input.unitPrice) }
-          : {}),
-        ...(input.availableStock !== undefined && input.availableStock !== null
-          ? { availableStock: input.availableStock }
-          : {})
+        ...(input.name !== undefined && input.name !== null ? { name: nextName } : {}),
+        ...(input.status ? { status: toDbCatalogStatus(input.status) } : {})
       }
-    })) as DbProduct;
+    })) as DbSupplier;
+    await audit("update_supplier", `Updated supplier ${supplier.name}`, { supplierId: supplier.id });
+    return mapSupplier(supplier);
+  }
+
+  async searchSupplier(input: { query: string }) {
+    return this.listSuppliers({ query: input.query });
+  }
+
+  async listSuppliers(input: SearchCatalogInput = {}) {
+    await ensureSeeded();
+    const suppliers = (await prisma.supplier.findMany({
+      orderBy: { name: "asc" }
+    })) as DbSupplier[];
+    const matches = filterByCatalogSearch(suppliers, input);
+    await audit("list_suppliers", "Listed suppliers", { resultCount: matches.length });
+    return matches.map(mapSupplier);
+  }
+
+  async updateProduct(input: {
+    productId: string;
+    name?: string | null;
+    unitPrice?: number | null;
+    availableStock?: number | null;
+    status?: "active" | "inactive" | null;
+  }) {
+    await ensureSeeded();
+    await ensureProductSchema();
+    const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", status FROM "Product"');
+    const current = products.find((product) => product.id === input.productId);
+    if (!current) {
+      throw new Error(`Product ${input.productId} not found.`);
+    }
+    const nextName = input.name ? cleanName(input.name) : current.name;
+    assertUniqueName(products, nextName, current.id, "Product");
+    await prisma.$executeRawUnsafe(
+      `
+        UPDATE "Product"
+        SET
+          name = $2,
+          "unitPriceCents" = $3,
+          "availableStock" = $4,
+          status = $5
+        WHERE id = $1
+      `,
+      input.productId,
+      nextName,
+      input.unitPrice !== undefined && input.unitPrice !== null ? toCents(input.unitPrice) : current.unitPriceCents,
+      input.availableStock !== undefined && input.availableStock !== null ? input.availableStock : current.availableStock,
+      input.status ?? current.status ?? "active"
+    );
+    const product = (await prisma.$queryRawUnsafe<DbProduct[]>(
+      'SELECT id, sku, name, "unitPriceCents", "availableStock", status FROM "Product" WHERE id = $1',
+      input.productId
+    ))[0];
+    if (!product) {
+      throw new Error(`Product ${input.productId} not found after update.`);
+    }
 
     await audit("update_product", `Updated product ${product.name}`, {
       productId: product.id,
+      name: input.name ?? null,
       unitPrice: input.unitPrice ?? null,
-      availableStock: input.availableStock ?? null
+      availableStock: input.availableStock ?? null,
+      status: input.status ?? null
     });
     return mapProduct(product);
   }
@@ -607,14 +768,13 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async searchProduct(input: { query: string }) {
-    await ensureSeeded();
-    const query = normalize(input.query);
-    const products = (await prisma.product.findMany()) as DbProduct[];
-    const matches = products.filter(
-      (product) => normalize(product.name).includes(query) || normalize(product.sku).includes(query)
-    );
+    const matches = await this.searchProductsAdvanced({ query: input.query });
     await audit("search_product", `Searched product "${input.query}"`, { resultCount: matches.length });
-    return matches.map(mapProduct);
+    return matches;
+  }
+
+  async searchProductsAdvanced(input: SearchCatalogInput = {}) {
+    return this.listProducts(input);
   }
 
   async validateStock(input: { productId: string; quantity: number }) {

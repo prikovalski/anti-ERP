@@ -3,6 +3,7 @@ import {
   CustomerSchema,
   ListConceptInvoicesInputSchema,
   ProductSchema,
+  SearchCatalogInputSchema,
   SupplierSchema,
   AnalyticsResultSchema,
   ListSalesOrdersInputSchema,
@@ -26,15 +27,23 @@ type McpServerRole =
   | "analytics";
 
 const clientPromises = new Map<McpServerRole, Promise<Client>>();
-const customerTools = new Set(["search_customer", "create_customer", "list_customers"]);
+const customerTools = new Set([
+  "search_customer",
+  "search_customers_advanced",
+  "create_customer",
+  "update_customer",
+  "list_customers"
+]);
 const productTools = new Set([
   "search_product",
+  "search_products_advanced",
   "create_product",
+  "list_products",
   "update_product",
   "validate_stock",
   "list_low_stock_products"
 ]);
-const supplierTools = new Set(["create_supplier"]);
+const supplierTools = new Set(["create_supplier", "update_supplier", "search_supplier", "list_suppliers"]);
 const salesOrderTools = new Set([
   "prepare_sales_order",
   "create_sales_order",
@@ -264,6 +273,15 @@ export class McpCapabilityGateway implements CapabilityGateway {
     return callTool("create_customer", input, CustomerSchema);
   }
 
+  async updateCustomer(input: {
+    customerId: string;
+    name?: string | null;
+    city?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
+  }) {
+    return callTool("update_customer", input, CustomerSchema);
+  }
+
   async listCustomers() {
     return callTool("list_customers", {}, z.array(CustomerSchema));
   }
@@ -272,14 +290,36 @@ export class McpCapabilityGateway implements CapabilityGateway {
     return callTool("create_product", input, ProductSchema);
   }
 
+  async listProducts(input: z.infer<typeof SearchCatalogInputSchema> = {}) {
+    return callTool("list_products", input, z.array(ProductSchema));
+  }
+
   async createSupplier(input: { name: string }) {
     return callTool("create_supplier", input, SupplierSchema);
   }
 
+  async updateSupplier(input: {
+    supplierId: string;
+    name?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
+  }) {
+    return callTool("update_supplier", input, SupplierSchema);
+  }
+
+  async searchSupplier(input: { query: string }) {
+    return callTool("search_supplier", input, z.array(SupplierSchema));
+  }
+
+  async listSuppliers(input: z.infer<typeof SearchCatalogInputSchema> = {}) {
+    return callTool("list_suppliers", input, z.array(SupplierSchema));
+  }
+
   async updateProduct(input: {
     productId: string;
+    name?: string | null;
     unitPrice?: number | null;
     availableStock?: number | null;
+    status?: "active" | "inactive" | null;
   }) {
     return callTool("update_product", input, ProductSchema);
   }
@@ -288,8 +328,16 @@ export class McpCapabilityGateway implements CapabilityGateway {
     return callTool("search_customer", input, z.array(CustomerSchema));
   }
 
+  async searchCustomersAdvanced(input: z.infer<typeof SearchCatalogInputSchema> = {}) {
+    return callTool("search_customers_advanced", input, z.array(CustomerSchema));
+  }
+
   async searchProduct(input: { query: string }) {
     return callTool("search_product", input, z.array(ProductSchema));
+  }
+
+  async searchProductsAdvanced(input: z.infer<typeof SearchCatalogInputSchema> = {}) {
+    return callTool("search_products_advanced", input, z.array(ProductSchema));
   }
 
   async validateStock(input: { productId: string; quantity: number }) {

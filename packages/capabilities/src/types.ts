@@ -10,21 +10,40 @@ import type {
   Product,
   SalesOrder,
   SalesOrderPreview,
+  SearchCatalogInput,
   Supplier
 } from "@anti-erp/shared";
 
 export interface CapabilityGateway {
   createCustomer(input: { name: string }): Promise<Customer>;
+  updateCustomer(input: {
+    customerId: string;
+    name?: string | null;
+    city?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
+  }): Promise<Customer>;
   listCustomers(): Promise<Customer[]>;
   createProduct(input: { name: string }): Promise<Product>;
+  listProducts(input?: SearchCatalogInput): Promise<Product[]>;
   createSupplier(input: { name: string }): Promise<Supplier>;
+  updateSupplier(input: {
+    supplierId: string;
+    name?: string | null;
+    status?: "active" | "inactive" | "blocked" | null;
+  }): Promise<Supplier>;
+  searchSupplier(input: { query: string }): Promise<Supplier[]>;
+  listSuppliers(input?: SearchCatalogInput): Promise<Supplier[]>;
   updateProduct(input: {
     productId: string;
+    name?: string | null;
     unitPrice?: number | null;
     availableStock?: number | null;
+    status?: "active" | "inactive" | null;
   }): Promise<Product>;
   searchCustomer(input: { query: string }): Promise<Customer[]>;
+  searchCustomersAdvanced(input?: SearchCatalogInput): Promise<Customer[]>;
   searchProduct(input: { query: string }): Promise<Product[]>;
+  searchProductsAdvanced(input?: SearchCatalogInput): Promise<Product[]>;
   validateStock(input: { productId: string; quantity: number }): Promise<{
     productId: string;
     requested: number;
