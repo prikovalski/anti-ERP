@@ -21,6 +21,7 @@ import { getCapabilityGateway } from "../capabilities";
 import { recordAgentStep } from "../observability/mcp-trace";
 import { createObservedCapabilityGateway } from "../observability/observed-gateway";
 import { parseIntentLocally } from "./intent-parser";
+import { buildSemanticPlan, type SemanticPlan } from "./semantic-plan";
 
 function id(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
@@ -405,6 +406,18 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
 
+  const semanticPlan = await buildSemanticPlan(input.message);
+  if (semanticPlan?.intent === "sales_order.create" && semanticPlan.confidence >= 0.8) {
+    await recordDirectDecision("semantic_plan_selected", {
+      intent: semanticPlan.intent,
+      confidence: semanticPlan.confidence,
+      stepCount: semanticPlan.steps.length,
+      itemCount: semanticPlan.entities.items.length,
+      hasCustomer: Boolean(semanticPlan.entities.customer?.name)
+    });
+    return executeSemanticSalesOrderPlan(gateway, semanticPlan);
+  }
+
   const intent = parseIntentLocally(input.message);
   await recordDirectDecision("direct_parse_local_intent", {
     intent: intent.intent,
@@ -626,6 +639,42 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     intent: intent.intent
   });
   return response("Nao consegui executar esse comando pelo executor local. Tente ser mais especifica.");
+}
+
+async function executeSemanticSalesOrderPlan(gateway: ReturnType<typeof createObservedCapabilityGateway>, plan: SemanticPlan) {
+  const customerName = plan.entities.customer?.name?.trim();
+  if (!customerName) {
+    return response("Qual cliente devo usar para criar o pedido?");
+  }
+  if (!plan.entities.items.length) {
+    return response("Quais itens devo incluir no pedido?");
+  }
+
+  const customers = await gateway.searchCustomer({ query: customerName });
+  const customer = customers[0];
+  if (!customer) {
+    return response(`Nao encontrei o cliente ${customerName}.`);
+  }
+
+  const lines = [];
+  for (const item of plan.entities.items) {
+    const products = await gateway.searchProduct({ query: item.product });
+    const product = products[0];
+    if (!product) {
+      return response(`Nao encontrei o produto ${item.product}.`);
+    }
+    lines.push({ productId: product.id, quantity: item.quantity });
+  }
+
+  const preview = await gateway.prepareSalesOrder({
+    customerId: customer.id,
+    lines
+  });
+
+  return response(`Preparei o pedido para ${customer.name}. Confira os itens e confirme para gravar.`, {
+    preview,
+    auditEvents: [audit("semantic_prepare_sales_order", `Pedido preparado por plano semantico para ${customer.name}.`)]
+  });
 }
 
 async function recordDirectDecision(name: string, outputs: Record<string, unknown>) {

@@ -471,9 +471,21 @@ async function applyInventoryMovement(input: {
 }) {
   await ensureSeeded();
   await ensureInventorySchema();
+  return applyInventoryMovementWithClient(prisma, input);
+}
+
+async function applyInventoryMovementWithClient(tx: PrismaTransaction, input: {
+  productId: string;
+  salesOrderId?: string | null;
+  type: InventoryMovement["type"];
+  quantity: number;
+  nextAvailableStock: (current: DbProduct & { reservedStock: number }) => number;
+  nextReservedStock: (current: DbProduct & { reservedStock: number }) => number;
+  reason?: string | null;
+}) {
   const movementId = `im_${randomToken()}_${Date.now()}`;
-  await prisma.$transaction(async (tx: PrismaTransaction) => {
-    const rows = await tx.$queryRawUnsafe<Array<DbProduct & { reservedStock: number }>>(
+  const createMovement = async (client: PrismaTransaction) => {
+    const rows = await client.$queryRawUnsafe<Array<DbProduct & { reservedStock: number }>>(
       'SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" WHERE id = $1 FOR UPDATE',
       input.productId
     );
@@ -488,13 +500,13 @@ async function applyInventoryMovement(input: {
     if (nextAvailableStock < 0 || nextReservedStock < 0) {
       throw new Error(`Insufficient stock for ${product.sku}.`);
     }
-    await tx.$executeRawUnsafe(
+    await client.$executeRawUnsafe(
       'UPDATE "Product" SET "availableStock" = $2, "reservedStock" = $3 WHERE id = $1',
       input.productId,
       nextAvailableStock,
       nextReservedStock
     );
-    await tx.$executeRawUnsafe(
+    await client.$executeRawUnsafe(
       `
         INSERT INTO "InventoryMovement" (
           id,
@@ -521,7 +533,16 @@ async function applyInventoryMovement(input: {
       nextReservedStock,
       input.reason ?? null
     );
-  });
+  };
+
+  if (tx === prisma) {
+    await prisma.$transaction(async (transaction: PrismaTransaction) => {
+      await createMovement(transaction);
+    });
+  } else {
+    await createMovement(tx);
+    return null as unknown as InventoryMovement;
+  }
   const [movement] = await fetchInventoryMovementsRaw({ take: 1 });
   if (!movement || movement.id !== movementId) {
     const [created] = await prisma.$queryRawUnsafe<RawInventoryMovementRow[]>(
@@ -1229,9 +1250,10 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
   async createSalesOrder(input: { preview: SalesOrderPreview; confirmedByUser: true }) {
     await ensureSeeded();
+    await ensureInventorySchema();
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const id = await nextBusinessId(tx, "sales_order", "SO", 1001);
-      return tx.salesOrder.create({
+      const createdOrder = await tx.salesOrder.create({
         data: {
           id,
           customerId: input.preview.customer.id,
@@ -1254,10 +1276,23 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
+      for (const line of input.preview.lines) {
+        await applyInventoryMovementWithClient(tx, {
+          productId: line.productId,
+          salesOrderId: id,
+          type: "reservation",
+          quantity: line.quantity,
+          reason: `Reserva automatica do pedido ${id}`,
+          nextAvailableStock: (product) => product.availableStock - line.quantity,
+          nextReservedStock: (product) => (product.reservedStock ?? 0) + line.quantity
+        });
+      }
+      return createdOrder;
     });
 
     await audit("create_sales_order", `Created sales order ${order.id}`, {
-      customerId: order.customerId
+      customerId: order.customerId,
+      inventoryReservation: "reserved_on_order_confirmation"
     });
     return mapSalesOrder(order);
   }
@@ -1268,6 +1303,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     quantity: number;
   }) {
     await ensureSeeded();
+    await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const existingOrder = await tx.salesOrder.findUniqueOrThrow({
@@ -1314,13 +1350,14 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
         });
       }
 
-      await tx.product.update({
-        where: { id: product.id },
-        data: {
-          availableStock: {
-            decrement: input.quantity
-          }
-        }
+      await applyInventoryMovementWithClient(tx, {
+        productId: product.id,
+        salesOrderId: existingOrder.id,
+        type: "reservation",
+        quantity: input.quantity,
+        reason: `Reserva automatica do pedido ${existingOrder.id}`,
+        nextAvailableStock: (current) => current.availableStock - input.quantity,
+        nextReservedStock: (current) => (current.reservedStock ?? 0) + input.quantity
       });
 
       return tx.salesOrder.findUniqueOrThrow({
@@ -1350,6 +1387,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     quantity: number;
   }) {
     await ensureSeeded();
+    await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const existingOrder = await tx.salesOrder.findUniqueOrThrow({
@@ -1382,22 +1420,25 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
         if (product.availableStock < delta) {
           throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
         }
-        await tx.product.update({
-          where: { id: product.id },
-          data: {
-            availableStock: {
-              decrement: delta
-            }
-          }
+        await applyInventoryMovementWithClient(tx, {
+          productId: product.id,
+          salesOrderId: existingOrder.id,
+          type: "reservation",
+          quantity: delta,
+          reason: `Reserva automatica do pedido ${existingOrder.id}`,
+          nextAvailableStock: (current) => current.availableStock - delta,
+          nextReservedStock: (current) => (current.reservedStock ?? 0) + delta
         });
       } else if (delta < 0) {
-        await tx.product.update({
-          where: { id: input.productId },
-          data: {
-            availableStock: {
-              increment: Math.abs(delta)
-            }
-          }
+        const releaseQuantity = Math.abs(delta);
+        await applyInventoryMovementWithClient(tx, {
+          productId: input.productId,
+          salesOrderId: existingOrder.id,
+          type: "reservation_release",
+          quantity: releaseQuantity,
+          reason: `Liberacao automatica do pedido ${existingOrder.id}`,
+          nextAvailableStock: (current) => current.availableStock + releaseQuantity,
+          nextReservedStock: (current) => (current.reservedStock ?? 0) - releaseQuantity
         });
       }
 
@@ -1441,6 +1482,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     productId: string;
   }) {
     await ensureSeeded();
+    await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const existingOrder = await tx.salesOrder.findUniqueOrThrow({
@@ -1468,13 +1510,14 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       await tx.salesOrderLine.delete({
         where: { id: currentLine.id }
       });
-      await tx.product.update({
-        where: { id: input.productId },
-        data: {
-          availableStock: {
-            increment: currentLine.quantity
-          }
-        }
+      await applyInventoryMovementWithClient(tx, {
+        productId: input.productId,
+        salesOrderId: existingOrder.id,
+        type: "reservation_release",
+        quantity: currentLine.quantity,
+        reason: `Liberacao automatica do pedido ${existingOrder.id}`,
+        nextAvailableStock: (current) => current.availableStock + currentLine.quantity,
+        nextReservedStock: (current) => (current.reservedStock ?? 0) - currentLine.quantity
       });
 
       return tx.salesOrder.findUniqueOrThrow({
@@ -1499,6 +1542,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
   async cancelSalesOrder(input: { salesOrderId: string }) {
     await ensureSeeded();
+    await ensureInventorySchema();
     const currentOrder = await fetchSalesOrderRaw(input.salesOrderId);
     if (!currentOrder) {
       throw new Error(`Sales order ${input.salesOrderId} not found.`);
@@ -1524,15 +1568,24 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       });
 
       if (existingOrder.status !== "canceled") {
-        for (const line of existingOrder.lines) {
-          await tx.product.update({
-            where: { id: line.productId },
-            data: {
-              availableStock: {
-                increment: line.quantity
-              }
-            }
-          });
+        const existingWriteOffs = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
+          'SELECT COUNT(*)::bigint AS count FROM "InventoryMovement" WHERE "salesOrderId" = $1 AND type = $2',
+          existingOrder.id,
+          "order_writeoff"
+        );
+        const alreadyWroteOff = Number(existingWriteOffs[0]?.count ?? 0) > 0;
+        if (!alreadyWroteOff) {
+          for (const line of existingOrder.lines) {
+            await applyInventoryMovementWithClient(tx, {
+              productId: line.productId,
+              salesOrderId: existingOrder.id,
+              type: "reservation_release",
+              quantity: line.quantity,
+              reason: `Cancelamento do pedido ${existingOrder.id}`,
+              nextAvailableStock: (current) => current.availableStock + line.quantity,
+              nextReservedStock: (current) => (current.reservedStock ?? 0) - line.quantity
+            });
+          }
         }
 
         await tx.$executeRawUnsafe(
@@ -1557,6 +1610,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
   async duplicateSalesOrder(input: { salesOrderId: string }) {
     await ensureSeeded();
+    await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const sourceOrder = await tx.salesOrder.findUniqueOrThrow({
@@ -1607,13 +1661,14 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       });
 
       for (const line of sourceOrder.lines) {
-        await tx.product.update({
-          where: { id: line.productId },
-          data: {
-            availableStock: {
-              decrement: line.quantity
-            }
-          }
+        await applyInventoryMovementWithClient(tx, {
+          productId: line.productId,
+          salesOrderId: id,
+          type: "reservation",
+          quantity: line.quantity,
+          reason: `Reserva automatica do pedido ${id}`,
+          nextAvailableStock: (current) => current.availableStock - line.quantity,
+          nextReservedStock: (current) => (current.reservedStock ?? 0) + line.quantity
         });
       }
 
@@ -1630,6 +1685,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   async createConceptInvoice(input: { salesOrderId: string }) {
     await ensureSeeded();
     await ensureInvoiceSchema();
+    await ensureInventorySchema();
     const invoiceId = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const order = await tx.salesOrder.findUniqueOrThrow({
         where: { id: input.salesOrderId },
@@ -1638,6 +1694,29 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           customer: true
         }
       });
+      const existingWriteOffs = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
+        'SELECT COUNT(*)::bigint AS count FROM "InventoryMovement" WHERE "salesOrderId" = $1 AND type = $2',
+        order.id,
+        "order_writeoff"
+      );
+      const alreadyWroteOff = Number(existingWriteOffs[0]?.count ?? 0) > 0;
+      if (!alreadyWroteOff) {
+        for (const line of order.lines) {
+          await applyInventoryMovementWithClient(tx, {
+            productId: line.productId,
+            salesOrderId: order.id,
+            type: "order_writeoff",
+            quantity: line.quantity,
+            reason: `Baixa automatica pela nota fiscal do pedido ${order.id}`,
+            nextAvailableStock: (product) => {
+              const reservedToConsume = Math.min(product.reservedStock ?? 0, line.quantity);
+              const remaining = line.quantity - reservedToConsume;
+              return product.availableStock - remaining;
+            },
+            nextReservedStock: (product) => (product.reservedStock ?? 0) - Math.min(product.reservedStock ?? 0, line.quantity)
+          });
+        }
+      }
       const id = await nextBusinessId(tx, "concept_invoice", "CI", 5001);
       const amountCents = order.lines.reduce((sum: number, line: { totalCents: number }) => sum + line.totalCents, 0);
       await tx.$executeRawUnsafe(

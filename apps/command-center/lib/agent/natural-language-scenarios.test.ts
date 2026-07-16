@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseIntentLocally } from "./intent-parser";
 import { runDirectAgent } from "./direct-agent";
+import { buildLocalSemanticPlan } from "./semantic-plan";
 
 process.env.CAPABILITY_GATEWAY = "demo";
 process.env.LANGSMITH_TRACING = "false";
@@ -23,6 +24,20 @@ test("parser understands natural Portuguese variations for sales orders", () => 
       quantity: 2
     },
     {
+      phrase: "crie um pedido com 1 monitor e 1 notebook para o cliente joao",
+      intent: "create_order",
+      customerQuery: "joao",
+      productQuery: "monitor",
+      quantity: 1
+    },
+    {
+      phrase: "crie um pedido de um monitor para joao da silva",
+      intent: "create_order",
+      customerQuery: "joao da silva",
+      productQuery: "monitor",
+      quantity: 1
+    },
+    {
       phrase: "crie o pedido e nota fiscal para Globo com 1 monitor e 1 teclado",
       intent: "create_order_with_invoice",
       customerQuery: "Globo",
@@ -38,6 +53,28 @@ test("parser understands natural Portuguese variations for sales orders", () => 
     assert.equal(intent.productQuery, scenario.productQuery, scenario.phrase);
     assert.equal(intent.quantity, scenario.quantity, scenario.phrase);
   }
+});
+
+test("semantic plan extracts free-order sales order requests", () => {
+  const plan = buildLocalSemanticPlan("crie um pedido com 1 monitor e 1 notebook para o cliente joao");
+  const naturalPlan = buildLocalSemanticPlan("crie um pedido de um monitor para joao da silva");
+
+  assert.equal(plan?.intent, "sales_order.create");
+  assert.equal(plan?.entities.customer?.name, "joao");
+  assert.deepEqual(plan?.entities.items, [
+    { product: "monitor", quantity: 1 },
+    { product: "notebook", quantity: 1 }
+  ]);
+  assert.deepEqual(plan?.steps, [
+    "resolve_customer",
+    "resolve_products",
+    "validate_stock",
+    "prepare_sales_order"
+  ]);
+  assert.equal(naturalPlan?.entities.customer?.name, "joao da silva");
+  assert.deepEqual(naturalPlan?.entities.items, [
+    { product: "monitor", quantity: 1 }
+  ]);
 });
 
 test("parser understands natural Portuguese variations for order item changes", () => {
@@ -87,6 +124,13 @@ test("parser understands natural Portuguese variations for catalog and analytics
 });
 
 test("direct agent executes natural sales order and catalog commands with demo gateway", async () => {
+  const freeOrder = await runDirectAgent({ message: "crie um pedido com 1 monitor e 1 notebook para o cliente Northstar" });
+  assert.equal(freeOrder.preview?.customer.name, "Northstar Labs");
+  assert.deepEqual(freeOrder.preview?.lines.map((line) => [line.name, line.quantity]), [
+    ["Monitor 27 4K", 1],
+    ["Notebook Air 14", 1]
+  ]);
+
   const order = await runDirectAgent({ message: "gere pedido para Northstar com dois monitores" });
   assert.equal(order.preview?.customer.name, "Northstar Labs");
   assert.equal(order.preview?.lines[0]?.quantity, 2);

@@ -98,7 +98,9 @@ export function extractFiscalIntent(message: string) {
 export function extractCustomerQuery(message: string) {
   const match =
     message.match(/\b(?:para|pra|pro)\s+(.+?)\s+(?:com|contendo|incluindo|de\s+(?=\d|\w+\s+unidade)|itens?\b|os\s+itens?\b)/i)
-    ?? message.match(/\bcliente\s+(.+?)(?=\s+(?:com|de|no|na|hoje|ontem|este|essa|esse|,|\.|$))/i);
+    ?? message.match(/\b(?:para|pra|pro)\s+(?:o\s+|a\s+)?cliente\s+(.+?)(?=\s+(?:com|de|no|na|hoje|ontem|este|essa|esse)\b|[,.!?]?$)/i)
+    ?? message.match(/\b(?:para|pra|pro)\s+(.+?)(?=\s+(?:com|de|no|na|hoje|ontem|este|essa|esse)\b|[,.!?]?$)/i)
+    ?? message.match(/\bcliente\s+(.+?)(?=\s+(?:com|de|no|na|hoje|ontem|este|essa|esse)\b|[,.!?]?$)/i);
   return match ? cleanEntityName(match[1] ?? "") : null;
 }
 
@@ -191,12 +193,15 @@ export function inferProductQueries(normalized: string) {
 function extractItemSegment(message: string) {
   const segmentMatch =
     message.match(/\b(?:com|contendo|incluindo)\s+(.+)$/i)
+    ?? message.match(/\bpedido\s+de\s+((?:\d+|um|uma|dois|duas|tres|três|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|vinte).+?)(?=\s+(?:para|pra|pro)\b|[.!?]?$)/i)
     ?? message.match(/\b(?:para|pra|pro)\s+.+?\s+de\s+((?:\d+|um|uma|dois|duas|tres|três|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|vinte).+)$/i);
   if (!segmentMatch) {
     return null;
   }
   return (segmentMatch[1] ?? "")
     .replace(/^(?:os\s+|as\s+)?itens?:?\s*/i, "")
+    .replace(/\s+(?:para|pra|pro)\s+(?:o\s+|a\s+)?cliente\s+.+$/i, "")
+    .replace(/\s+(?:para|pra|pro)\s+[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\s-]+$/i, "")
     .replace(/\s+(?:e\s+)?(?:gere|gerar|emita|emitir|crie|criar)\s+(?:a\s+|uma\s+)?(?:nota|nf|invoice|fatura).*$/i, "")
     .replace(/\s+(?:e\s+)?(?:gere|gerar|crie|criar|mostre|mostrar)\s+(?:um\s+|o\s+)?relat[oó]rio.*$/i, "")
     .replace(/[.!?]+$/g, "");

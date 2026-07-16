@@ -133,6 +133,7 @@ export default function CommandCenterPage() {
       "Crie o pedido e a NF para Globo com 1 monitor e 1 teclado",
       "Cadastre o cliente Atlas Retail",
       "Cadastre o produto Mouse",
+      "Liste os produtos cadastrados",
       "Atualize o preco do produto Mouse para 50 reais",
       "Quais produtos estao com estoque baixo?",
       "Quais produtos mais venderam hoje?",
@@ -334,6 +335,12 @@ export default function CommandCenterPage() {
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                runIntent(input);
+              }
+            }}
             aria-label="Comando de negocio"
             placeholder="Digite um comando, ex: crie um pedido para a Northstar de 10 notebooks"
           />

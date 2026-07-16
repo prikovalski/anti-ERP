@@ -507,6 +507,14 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       status: "confirmed",
       createdAt: now()
     };
+    for (const line of order.lines) {
+      await this.reserveInventory({
+        productId: line.productId,
+        quantity: line.quantity,
+        salesOrderId: order.id,
+        reason: `Reserva automatica do pedido ${order.id}`
+      });
+    }
     salesOrders.set(order.id, order);
     return order;
   }
@@ -546,7 +554,12 @@ export class DemoCapabilityGateway implements CapabilityGateway {
         total: input.quantity * product.unitPrice
       });
     }
-    product.availableStock -= input.quantity;
+    await this.reserveInventory({
+      productId: product.id,
+      quantity: input.quantity,
+      salesOrderId: order.id,
+      reason: `Reserva automatica do pedido ${order.id}`
+    });
     order.subtotal = order.lines.reduce((sum, line) => sum + line.total, 0);
     salesOrders.set(order.id, order);
     return order;
@@ -580,7 +593,21 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     if (delta > 0 && product.availableStock < delta) {
       throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
     }
-    product.availableStock -= delta;
+    if (delta > 0) {
+      await this.reserveInventory({
+        productId: product.id,
+        quantity: delta,
+        salesOrderId: order.id,
+        reason: `Reserva automatica do pedido ${order.id}`
+      });
+    } else if (delta < 0) {
+      await this.releaseInventoryReservation({
+        productId: product.id,
+        quantity: Math.abs(delta),
+        salesOrderId: order.id,
+        reason: `Liberacao automatica do pedido ${order.id}`
+      });
+    }
 
     if (input.quantity === 0) {
       order.lines = order.lines.filter((line) => line.productId !== product.id);
@@ -617,7 +644,12 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       throw new Error(`Sales order ${input.salesOrderId} must keep at least one item.`);
     }
 
-    product.availableStock += currentLine.quantity;
+    await this.releaseInventoryReservation({
+      productId: product.id,
+      quantity: currentLine.quantity,
+      salesOrderId: order.id,
+      reason: `Liberacao automatica do pedido ${order.id}`
+    });
     order.lines = order.lines.filter((line) => line.productId !== product.id);
     order.subtotal = order.lines.reduce((sum, line) => sum + line.total, 0);
     salesOrders.set(order.id, order);
@@ -630,10 +662,17 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       throw new Error(`Sales order ${input.salesOrderId} not found.`);
     }
     if (order.status !== "canceled") {
-      for (const line of order.lines) {
-        const product = this.products.find((candidate) => candidate.id === line.productId);
-        if (product) {
-          product.availableStock += line.quantity;
+      const alreadyWroteOff = inventoryMovements.some(
+        (movement) => movement.salesOrderId === order.id && movement.type === "order_writeoff"
+      );
+      if (!alreadyWroteOff) {
+        for (const line of order.lines) {
+          await this.releaseInventoryReservation({
+            productId: line.productId,
+            quantity: line.quantity,
+            salesOrderId: order.id,
+            reason: `Cancelamento do pedido ${order.id}`
+          });
         }
       }
       order.status = "canceled";
@@ -661,13 +700,6 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       }
     }
 
-    for (const line of sourceOrder.lines) {
-      const product = this.products.find((candidate) => candidate.id === line.productId);
-      if (product) {
-        product.availableStock -= line.quantity;
-      }
-    }
-
     const order: SalesOrder = {
       ...sourceOrder,
       id: createSalesOrderId(),
@@ -675,6 +707,14 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       createdAt: now(),
       lines: sourceOrder.lines.map((line) => ({ ...line }))
     };
+    for (const line of order.lines) {
+      await this.reserveInventory({
+        productId: line.productId,
+        quantity: line.quantity,
+        salesOrderId: order.id,
+        reason: `Reserva automatica do pedido ${order.id}`
+      });
+    }
     salesOrders.set(order.id, order);
     return order;
   }
@@ -683,6 +723,15 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     const order = salesOrders.get(input.salesOrderId);
     if (!order) {
       throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    const alreadyWroteOff = inventoryMovements.some(
+      (movement) => movement.salesOrderId === order.id && movement.type === "order_writeoff"
+    );
+    if (!alreadyWroteOff) {
+      await this.writeOffInventoryForSalesOrder({
+        salesOrderId: order.id,
+        reason: `Baixa automatica pela nota fiscal do pedido ${order.id}`
+      });
     }
 
     const invoice: ConceptInvoice = {
