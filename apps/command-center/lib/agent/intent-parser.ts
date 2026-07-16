@@ -88,7 +88,7 @@ function extractOrderLineAdditionCommand(message: string) {
 
 function extractOrderLineQuantityUpdateCommand(message: string) {
   const normalized = normalize(message);
-  if (!/\b(altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\b/.test(normalized)) {
+  if (!/\b(altere|alterar|atualize|atualizar|mude|muda|mudar|defina|definir|ajuste|ajustar)\b/.test(normalized)) {
     return null;
   }
   if (!/\b(pedido|order)\b/.test(normalized)) {
@@ -97,10 +97,10 @@ function extractOrderLineQuantityUpdateCommand(message: string) {
 
   const match =
     message.match(
-      new RegExp(`\\b(?:altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\\s+(?:a\\s+)?(?:quantidade\\s+(?:do|da)\\s+)?(.+?)\\s+(?:do|da|no|na)\\s+(?:ultimo\\s+|último\\s+)?pedido\\s+(?:para|pra|por|em)\\s+(${QUANTITY_TOKEN})\\b`, "i")
+      new RegExp(`\\b(?:altere|alterar|atualize|atualizar|mude|muda|mudar|defina|definir|ajuste|ajustar)\\s+(?:a\\s+)?(?:quantidade\\s+(?:do|da)\\s+)?(.+?)\\s+(?:do|da|no|na)\\s+(?:ultimo\\s+|último\\s+)?pedido\\s+(?:para|pra|por|em)\\s+(${QUANTITY_TOKEN})\\b`, "i")
     )
     ?? message.match(
-      new RegExp(`\\b(?:altere|alterar|atualize|atualizar|mude|mudar|defina|definir|ajuste|ajustar)\\s+(.+?)\\s+(?:para|pra|por|em)\\s+(${QUANTITY_TOKEN})\\s+(?:unidades?\\s+)?(?:no|na|do|da)\\s+(?:ultimo\\s+|último\\s+)?pedido\\b`, "i")
+      new RegExp(`\\b(?:altere|alterar|atualize|atualizar|mude|muda|mudar|defina|definir|ajuste|ajustar)\\s+(.+?)\\s+(?:para|pra|por|em)\\s+(${QUANTITY_TOKEN})\\s+(?:unidades?\\s+)?(?:no|na|do|da)\\s+(?:ultimo\\s+|último\\s+)?pedido\\b`, "i")
     );
   if (!match) {
     return null;
@@ -120,7 +120,7 @@ function extractOrderLineQuantityUpdateCommand(message: string) {
 
 function extractOrderLineRemovalCommand(message: string) {
   const normalized = normalize(message);
-  if (!/\b(remova|remover|retire|retirar|exclua|excluir)\b/.test(normalized)) {
+  if (!/\b(remova|remover|retire|retirar|tire|tira|exclua|excluir)\b/.test(normalized)) {
     return null;
   }
   if (!/\b(pedido|order)\b/.test(normalized)) {
@@ -128,7 +128,7 @@ function extractOrderLineRemovalCommand(message: string) {
   }
 
   const match = message.match(
-    /\b(?:remova|remover|retire|retirar|exclua|excluir)\s+(.+?)\s+(?:do|da|no|na)\s+(?:ultimo\s+|último\s+)?pedido\b/i
+    /\b(?:remova|remover|retire|retirar|tire|tira|exclua|excluir)\s+(.+?)\s+(?:do|da|no|na)\s+(?:ultimo\s+|último\s+)?pedido\b/i
   );
   if (!match) {
     return null;

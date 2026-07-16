@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { PrismaClient } from "@prisma/client";
 
 type McpTraceStatus = "success" | "error";
+type ObservabilityStepKind = "decision" | "capability" | "mcp" | "disambiguation" | "error" | "agent";
 
 export type McpTraceEntry = {
   id: string;
@@ -112,11 +113,13 @@ export function getCurrentMcpRequestId() {
 
 export async function recordAgentStep(input: {
   name: string;
+  kind?: ObservabilityStepKind;
   status: McpTraceStatus;
   durationMs: number;
   inputs?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
   error?: unknown;
+  metadata?: Record<string, unknown>;
 }) {
   const context = traceStorage.getStore();
   const timestamp = new Date().toISOString();
@@ -128,6 +131,8 @@ export async function recordAgentStep(input: {
     inputSummary: summarize(input.inputs ?? {}),
     outputSummary: input.status === "success" ? summarize(input.outputs ?? {}) : null,
     error: input.status === "error" ? summarizeError(input.error) : null,
+    kind: input.kind ?? inferStepKind(input.name, input.status),
+    metadata: summarize(input.metadata ?? {}),
     timestamp
   };
 
@@ -137,13 +142,17 @@ export async function recordAgentStep(input: {
       sendLangSmithChildRun(rootRun, {
         name: `agent.${input.name}`,
         runType: "chain",
-        tags: ["anti-erp", "agent", input.name],
+        tags: ["anti-erp", "agent", entry.kind, input.name],
         requestId: entry.requestId,
         status: entry.status,
         durationMs: entry.durationMs,
         inputSummary: entry.inputSummary,
         outputSummary: entry.outputSummary,
         error: entry.error,
+        metadata: {
+          kind: entry.kind,
+          ...entry.metadata
+        },
         timestamp
       })
     ),
@@ -256,6 +265,14 @@ function summarizeError(error: unknown) {
     return error.message.slice(0, 240);
   }
   return String(error).slice(0, 240);
+}
+
+function inferStepKind(name: string, status: McpTraceStatus): ObservabilityStepKind {
+  if (status === "error") return "error";
+  if (/disambiguation|clarification/i.test(name)) return "disambiguation";
+  if (/capability|gateway|query_|create_|update_|list_|search_|prepare_|cancel_|reissue_|duplicate_|inventory_/i.test(name)) return "capability";
+  if (/route|intent|decision|parse|infer|validate|resolve|compose/i.test(name)) return "decision";
+  return "agent";
 }
 
 async function persistMcpTrace(entry: McpTraceEntry) {
@@ -378,6 +395,11 @@ async function sendLangSmithMcpTrace(rootRun: LangSmithRunTree | null, entry: Mc
     inputSummary: entry.inputSummary ?? {},
     outputSummary: entry.outputSummary ?? {},
     error: entry.error ?? null,
+    metadata: {
+      kind: "mcp",
+      role: entry.role,
+      tool: entry.tool
+    },
     timestamp: entry.timestamp
   });
 }
@@ -394,6 +416,7 @@ async function sendLangSmithChildRun(
     inputSummary: Record<string, unknown>;
     outputSummary?: Record<string, unknown> | null;
     error?: string | null;
+    metadata?: Record<string, unknown>;
     timestamp: string;
   }
 ) {
@@ -412,7 +435,8 @@ async function sendLangSmithChildRun(
     metadata: {
       requestId: input.requestId,
       status: input.status,
-      durationMs: input.durationMs
+      durationMs: input.durationMs,
+      ...(input.metadata ?? {})
     },
     start_time: new Date(new Date(input.timestamp).getTime() - input.durationMs).toISOString()
   });

@@ -9,6 +9,8 @@ import {
   SupplierSchema,
   AnalyticsResultSchema,
   ListSalesOrdersInputSchema,
+  ManagerialReportSchema,
+  QueryManagerialReportInputSchema,
   SalesOrderPreviewSchema,
   SalesOrderSchema
 } from "@anti-erp/shared";
@@ -72,7 +74,7 @@ const invoiceTools = new Set([
   "get_concept_invoice",
   "list_concept_invoices"
 ]);
-const analyticsTools = new Set(["get_traditional_erp_flow", "query_sales_metrics"]);
+const analyticsTools = new Set(["get_traditional_erp_flow", "query_sales_metrics", "query_managerial_report"]);
 const MCP_CONNECT_TIMEOUT_MS = Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 5000);
 const MCP_TOOL_TIMEOUT_MS = Number(process.env.MCP_TOOL_TIMEOUT_MS ?? 8000);
 
@@ -501,5 +503,9 @@ export class McpCapabilityGateway implements CapabilityGateway {
     groupBy?: "product" | "customer" | "day" | null;
   }) {
     return callTool("query_sales_metrics", input, AnalyticsResultSchema);
+  }
+
+  async queryManagerialReport(input: z.infer<typeof QueryManagerialReportInputSchema>) {
+    return callTool("query_managerial_report", input, ManagerialReportSchema);
   }
 }

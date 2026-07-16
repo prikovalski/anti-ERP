@@ -7,6 +7,7 @@ import type {
   ConceptInvoice,
   ConversationContext,
   ExecutionPlan,
+  ManagerialReport,
   SalesOrder,
   SalesOrderPreview
 } from "@anti-erp/shared";
@@ -113,6 +114,7 @@ export default function CommandCenterPage() {
   const [order, setOrder] = useState<SalesOrder | null>(null);
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
   const [analyticsResult, setAnalyticsResult] = useState<AnalyticsResult | null>(null);
+  const [managerialReport, setManagerialReport] = useState<ManagerialReport | null>(null);
   const [executionPlan, setExecutionPlan] = useState<ExecutionPlan | null>(null);
   const [documentMessage, setDocumentMessage] = useState<DocumentMessage | null>(null);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
@@ -155,6 +157,7 @@ export default function CommandCenterPage() {
     setOrder(response.order ?? order);
     setInvoice(response.invoice ?? invoice);
     setAnalyticsResult(response.analyticsResult ?? null);
+    setManagerialReport(response.managerialReport ?? null);
     setExecutionPlan(response.executionPlan ?? null);
     setLastOrderId(response.lastOrderId ?? lastOrderId);
     setConversationContext(response.conversationContext ?? conversationContext);
@@ -185,6 +188,7 @@ export default function CommandCenterPage() {
     setOrder(null);
     setInvoice(null);
     setAnalyticsResult(null);
+    setManagerialReport(null);
     setExecutionPlan(null);
     setDocumentMessage(null);
     setMcpTrace([]);
@@ -356,6 +360,7 @@ export default function CommandCenterPage() {
           documentMessage={documentMessage}
           executionPlan={executionPlan}
           invoice={invoice}
+          managerialReport={managerialReport}
           mcpTrace={mcpTrace}
           order={order}
           pending={pending}
@@ -376,6 +381,7 @@ function DocumentWorkspace({
   documentMessage,
   executionPlan,
   invoice,
+  managerialReport,
   mcpTrace,
   order,
   pending,
@@ -390,6 +396,7 @@ function DocumentWorkspace({
   documentMessage: DocumentMessage | null;
   executionPlan: ExecutionPlan | null;
   invoice: ConceptInvoice | null;
+  managerialReport: ManagerialReport | null;
   mcpTrace: McpTrace;
   order: SalesOrder | null;
   pending: boolean;
@@ -397,8 +404,8 @@ function DocumentWorkspace({
   setCreateInvoiceAfterConfirm: (value: boolean) => void;
   onConfirmPreview: () => void;
 }) {
-  const hasDocument = Boolean(preview || order || invoice || analyticsResult || executionPlan || documentMessage);
-  const showGenericDocument = Boolean(documentMessage && !preview && !order && !invoice && !analyticsResult && !executionPlan);
+  const hasDocument = Boolean(preview || order || invoice || analyticsResult || managerialReport || executionPlan || documentMessage);
+  const showGenericDocument = Boolean(documentMessage && !preview && !order && !invoice && !analyticsResult && !managerialReport && !executionPlan);
 
   return (
     <div className="document-scroll">
@@ -415,6 +422,7 @@ function DocumentWorkspace({
         />
       ) : null}
       {order ? <ConfirmedOrderDocument invoice={invoice} order={order} /> : null}
+      {managerialReport ? <ManagerialReportDocument report={managerialReport} /> : null}
       {analyticsResult ? <ReportDocument result={analyticsResult} /> : null}
       <OperationalFooter audit={audit} conversationContext={conversationContext} trace={mcpTrace} />
     </div>
@@ -704,6 +712,97 @@ function ReportDocument({ result }: { result: AnalyticsResult }) {
       </div>
     </article>
   );
+}
+
+function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
+  const rows = report.rows;
+  const filters = report.query.filters.length
+    ? report.query.filters.map((filter) => `${filter.label}: ${filter.value}`).join(" | ")
+    : "sem filtros";
+
+  return (
+    <article className="document-card spreadsheet-report">
+      <DocumentTitle
+        icon={<UiIcon label="BI" size={20} />}
+        kicker="Relatorio gerencial"
+        title={report.title}
+        status={report.dataSource}
+      />
+
+      <div className="spreadsheet-toolbar">
+        <div>
+          <span>Resumo</span>
+          <strong>{report.summary}</strong>
+        </div>
+        <div>
+          <span>Periodo</span>
+          <strong>{report.dateRange}</strong>
+        </div>
+        <div>
+          <span>Linhas</span>
+          <strong>{rows.length}</strong>
+        </div>
+      </div>
+
+      {report.insights.length ? (
+        <div className="spreadsheet-meta">
+          {report.insights.map((insight, index) => (
+            <span key={`${report.kind}-insight-${index}`}>{insight}</span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="spreadsheet-meta">
+        <span>Fonte: {report.dataSource}</span>
+        <span>Capacidade: {report.query.capability}</span>
+        <span>Filtros: {filters}</span>
+        <span>Entidades: {report.query.entities.join(", ")}</span>
+      </div>
+
+      <div className="result-table-shell" role="table" aria-label={report.title}>
+        <div
+          className="result-table-row result-table-head"
+          role="row"
+          style={{ gridTemplateColumns: buildResultTableColumns(report.columns.length) }}
+        >
+          {report.columns.map((column) => (
+            <span key={column} role="columnheader">{formatColumnLabel(column)}</span>
+          ))}
+        </div>
+        {rows.map((row, rowIndex) => (
+          <div
+            key={`${report.kind}-${rowIndex}`}
+            className="result-table-row"
+            role="row"
+            style={{ gridTemplateColumns: buildResultTableColumns(report.columns.length) }}
+          >
+            {report.columns.map((column) => (
+              <span key={`${rowIndex}-${column}`} role="cell">{formatReportCell(row[column])}</span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function formatColumnLabel(value: string) {
+  return value
+    .replace(/([A-Z])/g, " $1")
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function formatReportCell(value: string | number | boolean | null | undefined) {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+  if (typeof value === "boolean") {
+    return value ? "Sim" : "Nao";
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : money(value);
+  }
+  return value;
 }
 
 function LinesTable({ lines }: { lines: SalesOrderPreview["lines"] }) {

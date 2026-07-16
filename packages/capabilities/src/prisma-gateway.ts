@@ -6,7 +6,10 @@ import {
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
   ListSalesOrdersInput,
+  ManagerialReport,
+  ManagerialReportKind,
   Product,
+  QueryManagerialReportInput,
   SalesOrder,
   SalesOrderLine,
   SalesOrderPreview,
@@ -1904,6 +1907,41 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       rows
     } satisfies AnalyticsResult;
   }
+
+  async queryManagerialReport(input: QueryManagerialReportInput) {
+    await ensureSeeded();
+    await ensureProductSchema();
+    const kind = input.kind ?? inferManagerialReportKind(input.question ?? "");
+    const dateRange = input.dateRange ?? "all_time";
+    const take = input.take ?? 10;
+    const orders = await fetchSalesOrdersRaw({
+      dateRange,
+      status: "confirmed",
+      take: 500
+    });
+    const products = (await prisma.$queryRawUnsafe<DbProduct[]>(
+      'SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" ORDER BY name ASC'
+    )).map(mapProduct);
+    const customers = await prisma.customer.findMany({
+      select: { id: true, name: true, status: true },
+      orderBy: { name: "asc" }
+    });
+    const report = buildManagerialReport({
+      kind,
+      dateRange,
+      take,
+      orders,
+      products,
+      customers,
+      dataSource: "postgres"
+    });
+    await audit("query_managerial_report", `Queried managerial report ${kind}`, {
+      kind,
+      dateRange,
+      rowCount: report.rows.length
+    });
+    return report;
+  }
 }
 
 function resolveDateRange(dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
@@ -2021,4 +2059,214 @@ function buildMetricRows(
   return Array.from(rows.entries())
     .map(([label, value]) => ({ label, value }))
     .sort((a, b) => b.value - a.value);
+}
+
+function inferManagerialReportKind(question: string): ManagerialReportKind {
+  const normalized = normalize(question);
+  if (/\b(margem|lucro|rentabilidade)\b/.test(normalized)) return "margin";
+  if (/\b(ruptura|estoque baixo|sem estoque|risco de estoque|repor|reposicao)\b/.test(normalized)) return "stockout_risk";
+  if (/\b(cliente|clientes|ativos|recorrentes)\b/.test(normalized)) return "active_customers";
+  if (/\b(tendencia|evolucao|crescimento|queda|por dia)\b/.test(normalized)) return "trend";
+  if (/\b(ranking|mais vendido|mais vendidos|top)\b/.test(normalized)) return "top_products";
+  if (/\b(faturamento|receita)\b/.test(normalized)) return "revenue";
+  return "sales_by_period";
+}
+
+function buildManagerialReport(input: {
+  kind: ManagerialReportKind;
+  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  take: number;
+  orders: SalesOrder[];
+  products: Product[];
+  customers: Array<{ id: string; name: string; status: string }>;
+  dataSource: "demo-memory" | "postgres";
+}): ManagerialReport {
+  const lines = input.orders.flatMap((order) => order.lines.map((line) => ({ order, line })));
+  const revenue = lines.reduce((sum, item) => sum + item.line.total, 0);
+  const units = lines.reduce((sum, item) => sum + item.line.quantity, 0);
+  const marginValue = revenue * 0.35;
+  const period = translateReportDateRange(input.dateRange);
+
+  if (input.kind === "active_customers") {
+    const rows = Array.from(groupByMap(input.orders, (order) => order.customer.name).entries())
+      .map(([customer, orders]) => ({
+        cliente: customer,
+        pedidos: orders.length,
+        faturamento: roundMoney(orders.flatMap((order) => order.lines).reduce((sum, line) => sum + line.total, 0)),
+        ultimoPedido: orders.map((order) => order.createdAt).sort().at(-1) ?? "-"
+      }))
+      .sort((a, b) => Number(b.faturamento) - Number(a.faturamento))
+      .slice(0, input.take);
+    return managerialReport({
+      kind: input.kind,
+      title: `Clientes ativos - ${period}`,
+      summary: `${rows.length} cliente(s) com pedido confirmado no periodo.`,
+      dateRange: input.dateRange,
+      dataSource: input.dataSource,
+      columns: ["cliente", "pedidos", "faturamento", "ultimoPedido"],
+      rows,
+      insights: rows.length ? [`${rows[0]?.cliente} lidera em faturamento no periodo.`] : ["Nao ha clientes ativos no periodo."],
+      entities: ["sales_orders", "customers"]
+    });
+  }
+
+  if (input.kind === "stockout_risk") {
+    const soldByProduct = sumBy(lines, (item) => item.line.productId, (item) => item.line.quantity);
+    const rows = input.products
+      .map((product) => {
+        const sold = soldByProduct.get(product.id) ?? 0;
+        const available = product.availableStock;
+        const reserved = product.reservedStock ?? 0;
+        const riskScore = available <= 0 ? 100 : sold > 0 ? Math.min(100, Math.round((sold / Math.max(available, 1)) * 25)) : available <= 10 ? 60 : 10;
+        return {
+          produto: product.name,
+          disponivel: available,
+          reservado: reserved,
+          vendidoPeriodo: sold,
+          risco: riskScore >= 80 ? "alto" : riskScore >= 50 ? "medio" : "baixo"
+        };
+      })
+      .filter((row) => row.risco !== "baixo" || Number(row.disponivel) <= 10)
+      .sort((a, b) => riskWeight(String(b.risco)) - riskWeight(String(a.risco)) || Number(a.disponivel) - Number(b.disponivel))
+      .slice(0, input.take);
+    return managerialReport({
+      kind: input.kind,
+      title: `Ruptura de estoque - ${period}`,
+      summary: rows.length ? `${rows.length} produto(s) exigem atencao de estoque.` : "Nenhum risco relevante de ruptura encontrado.",
+      dateRange: input.dateRange,
+      dataSource: input.dataSource,
+      columns: ["produto", "disponivel", "reservado", "vendidoPeriodo", "risco"],
+      rows,
+      insights: rows[0] ? [`Priorize ${rows[0].produto}: risco ${rows[0].risco}.`] : ["Estoque sem alerta critico no periodo."],
+      entities: ["products", "sales_order_lines"]
+    });
+  }
+
+  const rowsByProduct = Array.from(groupByMap(lines, (item) => item.line.name).entries())
+    .map(([product, items]) => {
+      const productRevenue = items.reduce((sum, item) => sum + item.line.total, 0);
+      const quantity = items.reduce((sum, item) => sum + item.line.quantity, 0);
+      return {
+        produto: product,
+        quantidade: quantity,
+        faturamento: roundMoney(productRevenue),
+        margemEstimada: roundMoney(productRevenue * 0.35),
+        participacao: revenue ? `${Math.round((productRevenue / revenue) * 100)}%` : "0%"
+      };
+    })
+    .sort((a, b) => Number(b.faturamento) - Number(a.faturamento))
+    .slice(0, input.take);
+
+  if (input.kind === "trend") {
+    const rows = Array.from(groupByMap(input.orders, (order) => order.createdAt.slice(0, 10)).entries())
+      .map(([dia, orders]) => ({
+        dia,
+        pedidos: orders.length,
+        unidades: orders.flatMap((order) => order.lines).reduce((sum, line) => sum + line.quantity, 0),
+        faturamento: roundMoney(orders.flatMap((order) => order.lines).reduce((sum, line) => sum + line.total, 0))
+      }))
+      .sort((a, b) => String(a.dia).localeCompare(String(b.dia)));
+    const first = Number(rows[0]?.faturamento ?? 0);
+    const last = Number(rows.at(-1)?.faturamento ?? 0);
+    const trend = rows.length < 2 ? "Dados insuficientes para tendencia." : last >= first ? "Tendencia de alta no faturamento." : "Tendencia de queda no faturamento.";
+    return managerialReport({
+      kind: input.kind,
+      title: `Tendencia de vendas - ${period}`,
+      summary: `${rows.length} dia(s) analisado(s), faturamento total ${formatReportMoney(revenue)}.`,
+      dateRange: input.dateRange,
+      dataSource: input.dataSource,
+      columns: ["dia", "pedidos", "unidades", "faturamento"],
+      rows,
+      insights: [trend],
+      entities: ["sales_orders", "sales_order_lines"]
+    });
+  }
+
+  const titleByKind: Record<ManagerialReportKind, string> = {
+    sales_by_period: `Vendas por periodo - ${period}`,
+    top_products: `Produtos mais vendidos - ${period}`,
+    active_customers: `Clientes ativos - ${period}`,
+    margin: `Margem estimada - ${period}`,
+    stockout_risk: `Ruptura de estoque - ${period}`,
+    revenue: `Faturamento - ${period}`,
+    ranking: `Ranking gerencial - ${period}`,
+    trend: `Tendencia de vendas - ${period}`
+  };
+
+  return managerialReport({
+    kind: input.kind,
+    title: titleByKind[input.kind],
+    summary: `${input.orders.length} pedido(s), ${units} unidade(s), ${formatReportMoney(revenue)} em faturamento${input.kind === "margin" ? ` e ${formatReportMoney(marginValue)} de margem estimada` : ""}.`,
+    dateRange: input.dateRange,
+    dataSource: input.dataSource,
+    columns: ["produto", "quantidade", "faturamento", "margemEstimada", "participacao"],
+    rows: rowsByProduct,
+    insights: [
+      rowsByProduct[0] ? `${rowsByProduct[0].produto} lidera com ${rowsByProduct[0].participacao} do faturamento.` : "Nao ha vendas no periodo.",
+      input.kind === "margin" ? "Margem estimada usando custo padrao de 65% do preco de venda." : `Ticket medio: ${formatReportMoney(input.orders.length ? revenue / input.orders.length : 0)}.`
+    ],
+    entities: ["sales_orders", "sales_order_lines", "products"]
+  });
+}
+
+function managerialReport(input: {
+  kind: ManagerialReportKind;
+  title: string;
+  summary: string;
+  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dataSource: "demo-memory" | "postgres";
+  columns: string[];
+  rows: Array<Record<string, string | number | boolean | null>>;
+  insights: string[];
+  entities: ManagerialReport["query"]["entities"];
+}): ManagerialReport {
+  return {
+    kind: input.kind,
+    title: input.title,
+    summary: input.summary,
+    dateRange: input.dateRange,
+    dataSource: input.dataSource,
+    columns: input.columns,
+    rows: input.rows,
+    insights: input.insights,
+    query: {
+      capability: "query_managerial_report",
+      entities: input.entities,
+      filters: [{ label: "period", value: input.dateRange.replaceAll("_", " ") }]
+    }
+  };
+}
+
+function groupByMap<T>(items: T[], keyFn: (item: T) => string) {
+  const map = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyFn(item);
+    map.set(key, [...(map.get(key) ?? []), item]);
+  }
+  return map;
+}
+
+function sumBy<T>(items: T[], keyFn: (item: T) => string, valueFn: (item: T) => number) {
+  const map = new Map<string, number>();
+  for (const item of items) {
+    const key = keyFn(item);
+    map.set(key, (map.get(key) ?? 0) + valueFn(item));
+  }
+  return map;
+}
+
+function riskWeight(value: string) {
+  return value === "alto" ? 3 : value === "medio" ? 2 : 1;
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function formatReportMoney(value: number) {
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+}
+
+function translateReportDateRange(dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
+  return dateRange === "today" ? "hoje" : dateRange === "last_7_days" ? "ultimos 7 dias" : dateRange === "month_to_date" ? "mes atual" : "todo o periodo";
 }

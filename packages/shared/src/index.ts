@@ -316,6 +316,43 @@ export const AnalyticsResultSchema = z.object({
   )
 });
 
+export const ManagerialReportKindSchema = z.enum([
+  "sales_by_period",
+  "top_products",
+  "active_customers",
+  "margin",
+  "stockout_risk",
+  "revenue",
+  "ranking",
+  "trend"
+]);
+
+export const QueryManagerialReportInputSchema = z.object({
+  question: z.string().trim().min(1).nullable().optional(),
+  kind: ManagerialReportKindSchema.nullable().optional(),
+  dateRange: AnalyticsDateRangeSchema.default("all_time"),
+  groupBy: AnalyticsGroupBySchema.nullable().optional(),
+  take: z.number().int().positive().max(100).nullable().optional()
+});
+
+export const ManagerialReportValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+export const ManagerialReportSchema = z.object({
+  kind: ManagerialReportKindSchema,
+  title: z.string(),
+  summary: z.string(),
+  dateRange: AnalyticsDateRangeSchema,
+  dataSource: z.enum(["demo-memory", "mcp-memory", "postgres"]),
+  columns: z.array(z.string()),
+  rows: z.array(z.record(ManagerialReportValueSchema)),
+  insights: z.array(z.string()),
+  query: z.object({
+    capability: z.literal("query_managerial_report"),
+    entities: z.array(AnalyticsEntitySchema),
+    filters: z.array(AnalyticsFilterSchema)
+  })
+});
+
 export const AgentMessageSchema = z.object({
   id: z.string(),
   role: z.enum(["user", "agent"]),
@@ -389,6 +426,7 @@ export const AgentResponseSchema = z.object({
   order: SalesOrderSchema.nullable().optional(),
   invoice: ConceptInvoiceSchema.nullable().optional(),
   analyticsResult: AnalyticsResultSchema.nullable().optional(),
+  managerialReport: ManagerialReportSchema.nullable().optional(),
   executionPlan: ExecutionPlanSchema.nullable().optional(),
   clarification: ClarificationRequestSchema.nullable().optional(),
   auditEvents: z.array(AuditEventSchema),
@@ -504,6 +542,9 @@ export type QuerySalesMetricsInput = z.infer<typeof QuerySalesMetricsInputSchema
 export type AnalyticsEntity = z.infer<typeof AnalyticsEntitySchema>;
 export type AnalyticsFilter = z.infer<typeof AnalyticsFilterSchema>;
 export type AnalyticsResult = z.infer<typeof AnalyticsResultSchema>;
+export type ManagerialReportKind = z.infer<typeof ManagerialReportKindSchema>;
+export type QueryManagerialReportInput = z.infer<typeof QueryManagerialReportInputSchema>;
+export type ManagerialReport = z.infer<typeof ManagerialReportSchema>;
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 export type ConversationEntity = z.infer<typeof ConversationEntitySchema>;
 export type ConversationContext = z.infer<typeof ConversationContextSchema>;

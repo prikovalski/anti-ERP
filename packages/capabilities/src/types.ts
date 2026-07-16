@@ -9,7 +9,9 @@ import type {
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
   ListSalesOrdersInput,
+  ManagerialReport,
   Product,
+  QueryManagerialReportInput,
   SalesOrder,
   SalesOrderPreview,
   SearchCatalogInput,
@@ -114,4 +116,5 @@ export interface CapabilityGateway {
     dateRange: AnalyticsDateRange;
     groupBy?: AnalyticsGroupBy | null;
   }): Promise<AnalyticsResult>;
+  queryManagerialReport(input: QueryManagerialReportInput): Promise<ManagerialReport>;
 }

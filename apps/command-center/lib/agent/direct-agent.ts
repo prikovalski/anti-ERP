@@ -10,12 +10,16 @@ import type {
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
   ListSalesOrdersInput,
+  ManagerialReport,
+  ManagerialReportKind,
   Product,
   SalesOrder,
   SalesOrderStatus,
   Supplier
 } from "@anti-erp/shared";
 import { getCapabilityGateway } from "../capabilities";
+import { recordAgentStep } from "../observability/mcp-trace";
+import { createObservedCapabilityGateway } from "../observability/observed-gateway";
 import { parseIntentLocally } from "./intent-parser";
 
 function id(prefix: string) {
@@ -46,8 +50,34 @@ function response(text: string, extra: Partial<AgentResponse> = {}): AgentRespon
 }
 
 export async function runDirectAgent(input: { message: string; lastOrderId?: string | null }): Promise<AgentResponse> {
+  await recordDirectDecision("direct_agent_start", {
+    messageLength: input.message.length,
+    hasLastOrderId: Boolean(input.lastOrderId)
+  });
+  const gateway = createObservedCapabilityGateway(await getCapabilityGateway(), "capability");
+  if (isManagerialReportRequest(input.message)) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "managerial_report",
+      kind: inferManagerialReportKind(input.message)
+    });
+    const report = await gateway.queryManagerialReport({
+      question: input.message,
+      kind: inferManagerialReportKind(input.message),
+      dateRange: inferDateRange(input.message),
+      groupBy: inferGroupBy(input.message),
+      take: 10
+    });
+    return response(formatManagerialReportAnswer(report), {
+      managerialReport: report,
+      auditEvents: [audit("query_managerial_report", `Relatorio gerencial executado: ${report.kind}.`)]
+    });
+  }
+
   if (asksToListCustomers(input.message)) {
-    const gateway = await getCapabilityGateway();
+    await recordDirectDecision("direct_route_selected", {
+      route: "catalog_list",
+      catalogKind: "customer"
+    });
     const status = inferCatalogStatus(normalizeText(input.message));
     const customers = await gateway.searchCustomersAdvanced({ status, take: 25 });
     return response(formatCustomerList(customers), {
@@ -55,9 +85,13 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
 
-  const gateway = await getCapabilityGateway();
   const explicitCatalogCommand = parseExplicitCatalogCommand(input.message);
   if (explicitCatalogCommand.action === "list") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "explicit_catalog",
+      action: explicitCatalogCommand.action,
+      catalogKind: explicitCatalogCommand.kind
+    });
     if (explicitCatalogCommand.kind === "product") {
       const products = await gateway.listProducts({ query: explicitCatalogCommand.query, status: explicitCatalogCommand.status, take: 25 });
       return response(formatProductList(products), {
@@ -79,6 +113,12 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (explicitCatalogCommand.action === "set_status" && explicitCatalogCommand.query && explicitCatalogCommand.status) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "explicit_catalog",
+      action: explicitCatalogCommand.action,
+      catalogKind: explicitCatalogCommand.kind,
+      status: explicitCatalogCommand.status
+    });
     if (explicitCatalogCommand.kind === "product") {
       const product = (await gateway.searchProduct({ query: explicitCatalogCommand.query }))[0];
       if (!product) return response(`Nao encontrei o produto ${explicitCatalogCommand.query}.`);
@@ -106,6 +146,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (explicitCatalogCommand.action === "rename" && explicitCatalogCommand.query && explicitCatalogCommand.nextName) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "explicit_catalog",
+      action: explicitCatalogCommand.action,
+      catalogKind: explicitCatalogCommand.kind
+    });
     if (explicitCatalogCommand.kind === "product") {
       const product = (await gateway.searchProduct({ query: explicitCatalogCommand.query }))[0];
       if (!product) return response(`Nao encontrei o produto ${explicitCatalogCommand.query}.`);
@@ -128,6 +173,12 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
 
   const explicitInventoryCommand = parseExplicitInventoryCommand(input.message);
   if (explicitInventoryCommand.action) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "inventory",
+      action: explicitInventoryCommand.action,
+      hasProductQuery: Boolean(explicitInventoryCommand.productQuery),
+      hasSalesOrderId: Boolean(explicitInventoryCommand.salesOrderId)
+    });
     if (explicitInventoryCommand.action === "low_stock") {
       const products = await gateway.listLowStockProducts({ threshold: explicitInventoryCommand.threshold ?? 10 });
       const text = products.length
@@ -227,6 +278,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
 
   const explicitInvoiceCommand = parseExplicitInvoiceCommand(input.message);
   if (explicitInvoiceCommand.action === "create") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "invoice",
+      action: explicitInvoiceCommand.action,
+      hasSalesOrderId: Boolean(explicitInvoiceCommand.salesOrderId ?? input.lastOrderId)
+    });
     const salesOrderId = explicitInvoiceCommand.salesOrderId ?? input.lastOrderId ?? null;
     if (!salesOrderId) {
       return response("Qual pedido devo usar para emitir a nota fiscal? Informe o numero do pedido.");
@@ -239,6 +295,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
   if (explicitInvoiceCommand.action === "get" && explicitInvoiceCommand.invoiceId) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "invoice",
+      action: explicitInvoiceCommand.action,
+      invoiceId: explicitInvoiceCommand.invoiceId
+    });
     const invoice = await gateway.getConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
     if (!invoice) {
       return response(`Nao encontrei a nota fiscal ${explicitInvoiceCommand.invoiceId}.`);
@@ -250,6 +311,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
   if (explicitInvoiceCommand.action === "cancel" && explicitInvoiceCommand.invoiceId) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "invoice",
+      action: explicitInvoiceCommand.action,
+      invoiceId: explicitInvoiceCommand.invoiceId
+    });
     const invoice = await gateway.cancelConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
     return response(`Nota fiscal conceitual ${invoice.id} cancelada.`, {
       invoice,
@@ -258,6 +324,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
   if (explicitInvoiceCommand.action === "reissue" && explicitInvoiceCommand.invoiceId) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "invoice",
+      action: explicitInvoiceCommand.action,
+      invoiceId: explicitInvoiceCommand.invoiceId
+    });
     const invoice = await gateway.reissueConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
     return response(`Nota fiscal ${explicitInvoiceCommand.invoiceId} reemitida como ${invoice.id}.`, {
       invoice,
@@ -266,6 +337,10 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
   if (explicitInvoiceCommand.action === "list") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "invoice",
+      action: explicitInvoiceCommand.action
+    });
     const invoices = await gateway.listConceptInvoices(explicitInvoiceCommand.filters);
     return response(formatInvoiceList(invoices, explicitInvoiceCommand.filters), {
       auditEvents: [audit("list_concept_invoices", `Listadas ${invoices.length} nota(s) fiscal(is).`)]
@@ -275,6 +350,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   const explicitOrderCommand = parseExplicitOrderCommand(input.message);
 
   if (explicitOrderCommand.action === "get" && explicitOrderCommand.salesOrderId) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "sales_order",
+      action: explicitOrderCommand.action,
+      salesOrderId: explicitOrderCommand.salesOrderId
+    });
     const order = await gateway.getSalesOrder({ salesOrderId: explicitOrderCommand.salesOrderId });
     if (!order) {
       return response(`Nao encontrei o pedido ${explicitOrderCommand.salesOrderId}.`);
@@ -287,6 +367,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (explicitOrderCommand.action === "cancel" && explicitOrderCommand.salesOrderId) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "sales_order",
+      action: explicitOrderCommand.action,
+      salesOrderId: explicitOrderCommand.salesOrderId
+    });
     const order = await gateway.cancelSalesOrder({ salesOrderId: explicitOrderCommand.salesOrderId });
     return response(`Pedido ${order.id} cancelado. O estoque dos itens foi recomposto.`, {
       order,
@@ -296,6 +381,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (explicitOrderCommand.action === "duplicate" && explicitOrderCommand.salesOrderId) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "sales_order",
+      action: explicitOrderCommand.action,
+      salesOrderId: explicitOrderCommand.salesOrderId
+    });
     const order = await gateway.duplicateSalesOrder({ salesOrderId: explicitOrderCommand.salesOrderId });
     return response(`Pedido ${explicitOrderCommand.salesOrderId} duplicado como ${order.id}.`, {
       order,
@@ -305,6 +395,10 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (explicitOrderCommand.action === "list") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "sales_order",
+      action: explicitOrderCommand.action
+    });
     const orders = await gateway.listSalesOrders(explicitOrderCommand.filters);
     return response(formatOrderList(orders, explicitOrderCommand.filters), {
       auditEvents: [audit("list_sales_orders", `Listados ${orders.length} pedido(s).`)]
@@ -312,8 +406,18 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   const intent = parseIntentLocally(input.message);
+  await recordDirectDecision("direct_parse_local_intent", {
+    intent: intent.intent,
+    confidence: intent.confidence,
+    hasCustomerQuery: Boolean(intent.customerQuery),
+    lineCount: intent.orderLines?.length ?? 0
+  });
 
   if (intent.intent === "list_orders") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "list_orders",
+      intent: intent.intent
+    });
     const filters = inferOrderListFilters(input.message);
     const orders = await gateway.listSalesOrders(filters);
     return response(formatOrderList(orders, filters), {
@@ -322,6 +426,24 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (intent.intent === "analytics_query") {
+    await recordDirectDecision("direct_route_selected", {
+      route: isManagerialReportRequest(input.message) ? "managerial_report" : "analytics",
+      intent: intent.intent,
+      metric: intent.analytics?.metric ?? inferMetric(input.message)
+    });
+    if (isManagerialReportRequest(input.message)) {
+      const report = await gateway.queryManagerialReport({
+        question: input.message,
+        kind: inferManagerialReportKind(input.message),
+        dateRange: intent.analytics?.dateRange ?? inferDateRange(input.message),
+        groupBy: intent.analytics?.groupBy ?? inferGroupBy(input.message),
+        take: 10
+      });
+      return response(formatManagerialReportAnswer(report), {
+        managerialReport: report,
+        auditEvents: [audit("query_managerial_report", `Relatorio gerencial executado: ${report.kind}.`)]
+      });
+    }
     const analytics = intent.analytics;
     const result = await gateway.querySalesMetrics({
       metric: analytics?.metric ?? inferMetric(input.message),
@@ -338,6 +460,10 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (intent.intent === "create_invoice") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "invoice",
+      intent: intent.intent
+    });
     const salesOrderId = extractSalesOrderId(input.message) ?? input.lastOrderId ?? null;
     if (!salesOrderId) {
       return response("Qual pedido devo usar para emitir a nota fiscal? Informe o numero do pedido.");
@@ -351,6 +477,10 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (intent.intent === "inventory_diagnostic") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "inventory_diagnostic",
+      intent: intent.intent
+    });
     const products = await gateway.listLowStockProducts({ threshold: 10 });
     const text = products.length
       ? `Produtos com estoque baixo: ${products.map((product) => `${product.name} (${product.availableStock})`).join(", ")}.`
@@ -361,6 +491,10 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (intent.intent === "create_customer" || intent.intent === "create_product" || intent.intent === "create_supplier") {
+    await recordDirectDecision("direct_route_selected", {
+      route: "catalog_create",
+      intent: intent.intent
+    });
     const name = intent.catalogName?.trim();
     if (!name) {
       return response("Qual nome devo cadastrar?");
@@ -377,6 +511,14 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       });
     } catch (error) {
       if (error instanceof Error && /already exists/i.test(error.message)) {
+        await recordAgentStep({
+          name: "direct_controlled_error.duplicate_catalog",
+          kind: "error",
+          status: "error",
+          durationMs: 0,
+          inputs: { intent: intent.intent, name },
+          error
+        });
         return response(`Nao cadastrei ${name}, porque ja existe um cadastro com exatamente esse nome.`);
       }
       throw error;
@@ -384,6 +526,10 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (intent.intent === "update_product" && intent.productUpdate?.productQuery) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "product_update",
+      intent: intent.intent
+    });
     const matches = await gateway.searchProduct({ query: intent.productUpdate.productQuery });
     const product = matches[0];
     if (!product) {
@@ -405,6 +551,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       intent.intent === "remove_item_from_order") &&
     intent.productQuery
   ) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "order_update",
+      intent: intent.intent,
+      productQuery: intent.productQuery
+    });
     const salesOrderId = extractSalesOrderId(input.message) ?? input.lastOrderId ?? null;
     if (!salesOrderId) {
       return response("Qual pedido devo alterar? Informe o numero do pedido ou use o pedido criado anteriormente.");
@@ -438,6 +589,12 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if ((intent.intent === "create_order" || intent.intent === "create_order_with_invoice") && intent.customerQuery && intent.orderLines?.length) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "sales_order_preview",
+      intent: intent.intent,
+      customerQuery: intent.customerQuery,
+      lineCount: intent.orderLines.length
+    });
     const customers = await gateway.searchCustomer({ query: intent.customerQuery });
     const customer = customers[0];
     if (!customer) {
@@ -464,7 +621,21 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
 
+  await recordDirectDecision("direct_route_selected", {
+    route: "unknown",
+    intent: intent.intent
+  });
   return response("Nao consegui executar esse comando pelo executor local. Tente ser mais especifica.");
+}
+
+async function recordDirectDecision(name: string, outputs: Record<string, unknown>) {
+  await recordAgentStep({
+    name,
+    kind: "decision",
+    status: "success",
+    durationMs: 0,
+    outputs
+  });
 }
 
 function parseExplicitInventoryCommand(message: string): {
@@ -904,6 +1075,27 @@ function translateInventoryMovementType(type: InventoryMovement["type"]) {
     order_writeoff: "baixa por pedido"
   };
   return labels[type];
+}
+
+function isManagerialReportRequest(message: string) {
+  const normalized = normalizeText(message);
+  return /\b(relatorio|gerencial|analise|indicadores|dashboard|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos)\b/.test(normalized);
+}
+
+function inferManagerialReportKind(message: string): ManagerialReportKind {
+  const normalized = normalizeText(message);
+  if (/\b(margem|lucro|rentabilidade)\b/.test(normalized)) return "margin";
+  if (/\b(ruptura|estoque baixo|sem estoque|risco de estoque|repor|reposicao)\b/.test(normalized)) return "stockout_risk";
+  if (/\b(cliente|clientes|ativos|recorrentes)\b/.test(normalized)) return "active_customers";
+  if (/\b(tendencia|evolucao|crescimento|queda|por dia)\b/.test(normalized)) return "trend";
+  if (/\b(ranking|mais vendido|mais vendidos|top)\b/.test(normalized)) return "top_products";
+  if (/\b(faturamento|receita)\b/.test(normalized)) return "revenue";
+  return "sales_by_period";
+}
+
+function formatManagerialReportAnswer(report: ManagerialReport) {
+  const insight = report.insights[0] ? ` ${report.insights[0]}` : "";
+  return `${report.title}: ${report.summary}${insight}`;
 }
 
 function formatInventoryError(error: unknown) {
