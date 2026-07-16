@@ -2,6 +2,7 @@ import {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  ListConceptInvoicesInput,
   ListSalesOrdersInput,
   Product,
   SalesOrder,
@@ -58,6 +59,22 @@ type RawSalesOrderRow = {
   line_total_cents: number | null;
 };
 
+type RawConceptInvoiceRow = {
+  invoice_id: string;
+  sales_order_id: string;
+  customer_name: string;
+  amount_cents: number;
+  issued_at: Date;
+  disclaimer: string;
+  status: "issued" | "canceled" | "reissued";
+  canceled_at: Date | null;
+  reissued_from_invoice_id: string | null;
+  replaced_by_invoice_id: string | null;
+  source_order_updated_at: Date | null;
+  source_order_amount_cents: number;
+  current_order_amount_cents: number;
+};
+
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
 };
@@ -73,10 +90,16 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 let seedPromise: Promise<void> | null = null;
+let invoiceSchemaPromise: Promise<void> | null = null;
 
 function ensureSeeded() {
   seedPromise ??= seedDemoData();
   return seedPromise;
+}
+
+function ensureInvoiceSchema() {
+  invoiceSchemaPromise ??= ensureConceptInvoiceColumns();
+  return invoiceSchemaPromise;
 }
 
 function normalize(value: string) {
@@ -280,6 +303,95 @@ async function fetchSalesOrdersRaw(input: ListSalesOrdersInput & { salesOrderId?
 
 async function fetchSalesOrderRaw(salesOrderId: string) {
   return (await fetchSalesOrdersRaw({ salesOrderId, take: 1 }))[0] ?? null;
+}
+
+async function ensureConceptInvoiceColumns() {
+  await prisma.$executeRawUnsafe('ALTER TABLE "ConceptInvoice" ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT \'issued\'');
+  await prisma.$executeRawUnsafe('ALTER TABLE "ConceptInvoice" ADD COLUMN IF NOT EXISTS "canceledAt" TIMESTAMP(3)');
+  await prisma.$executeRawUnsafe('ALTER TABLE "ConceptInvoice" ADD COLUMN IF NOT EXISTS "reissuedFromInvoiceId" TEXT');
+  await prisma.$executeRawUnsafe('ALTER TABLE "ConceptInvoice" ADD COLUMN IF NOT EXISTS "replacedByInvoiceId" TEXT');
+  await prisma.$executeRawUnsafe('ALTER TABLE "ConceptInvoice" ADD COLUMN IF NOT EXISTS "sourceOrderUpdatedAt" TIMESTAMP(3)');
+  await prisma.$executeRawUnsafe('ALTER TABLE "ConceptInvoice" ADD COLUMN IF NOT EXISTS "sourceOrderAmountCents" INTEGER NOT NULL DEFAULT 0');
+  await prisma.$executeRawUnsafe(`
+    UPDATE "ConceptInvoice" ci
+    SET "sourceOrderAmountCents" = ci."amountCents"
+    WHERE ci."sourceOrderAmountCents" = 0
+  `);
+}
+
+function mapRawConceptInvoice(row: RawConceptInvoiceRow): ConceptInvoice {
+  return {
+    id: row.invoice_id,
+    salesOrderId: row.sales_order_id,
+    customerName: row.customer_name,
+    amount: fromCents(row.amount_cents),
+    issuedAt: row.issued_at.toISOString(),
+    disclaimer: row.disclaimer,
+    status: row.status,
+    canceledAt: row.canceled_at?.toISOString() ?? null,
+    reissuedFromInvoiceId: row.reissued_from_invoice_id,
+    replacedByInvoiceId: row.replaced_by_invoice_id,
+    sourceOrderUpdatedAt: row.source_order_updated_at?.toISOString() ?? null,
+    orderChangedAfterIssue: row.source_order_amount_cents !== row.current_order_amount_cents
+  };
+}
+
+async function fetchConceptInvoicesRaw(input: ListConceptInvoicesInput & { invoiceId?: string | null } = {}) {
+  await ensureInvoiceSchema();
+  const range = resolveDateRange(input.dateRange ?? "all_time");
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (input.invoiceId) {
+    params.push(input.invoiceId);
+    conditions.push(`ci.id = $${params.length}`);
+  }
+  if (input.salesOrderId) {
+    params.push(input.salesOrderId);
+    conditions.push(`ci."salesOrderId" = $${params.length}`);
+  }
+  if (input.status) {
+    params.push(input.status);
+    conditions.push(`ci.status = $${params.length}`);
+  }
+  if (range) {
+    params.push(range.start);
+    conditions.push(`ci."issuedAt" >= $${params.length}`);
+    params.push(range.end);
+    conditions.push(`ci."issuedAt" < $${params.length}`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = await prisma.$queryRawUnsafe<RawConceptInvoiceRow[]>(
+    `
+      SELECT
+        ci.id AS invoice_id,
+        ci."salesOrderId" AS sales_order_id,
+        c.name AS customer_name,
+        ci."amountCents" AS amount_cents,
+        ci."issuedAt" AS issued_at,
+        ci.disclaimer,
+        ci.status,
+        ci."canceledAt" AS canceled_at,
+        ci."reissuedFromInvoiceId" AS reissued_from_invoice_id,
+        ci."replacedByInvoiceId" AS replaced_by_invoice_id,
+        ci."sourceOrderUpdatedAt" AS source_order_updated_at,
+        ci."sourceOrderAmountCents" AS source_order_amount_cents,
+        COALESCE(SUM(sol."totalCents"), 0)::int AS current_order_amount_cents
+      FROM "ConceptInvoice" ci
+      JOIN "SalesOrder" so ON so.id = ci."salesOrderId"
+      JOIN "Customer" c ON c.id = so."customerId"
+      LEFT JOIN "SalesOrderLine" sol ON sol."salesOrderId" = so.id
+      ${where}
+      GROUP BY ci.id, c.name
+      ORDER BY ci."issuedAt" DESC
+      LIMIT 500
+    `,
+    ...params
+  );
+  return rows.map(mapRawConceptInvoice).slice(0, input.take ?? 25);
+}
+
+async function fetchConceptInvoiceRaw(invoiceId: string) {
+  return (await fetchConceptInvoicesRaw({ invoiceId, take: 1 }))[0] ?? null;
 }
 
 async function assertSalesOrderCanChange(salesOrderId: string) {
@@ -1001,7 +1113,8 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
   async createConceptInvoice(input: { salesOrderId: string }) {
     await ensureSeeded();
-    const invoice = await prisma.$transaction(async (tx: PrismaTransaction) => {
+    await ensureInvoiceSchema();
+    const invoiceId = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const order = await tx.salesOrder.findUniqueOrThrow({
         where: { id: input.salesOrderId },
         include: {
@@ -1010,37 +1123,139 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
         }
       });
       const id = await nextBusinessId(tx, "concept_invoice", "CI", 5001);
-      return tx.conceptInvoice.create({
-        data: {
-          id,
-          salesOrderId: order.id,
-          amountCents: order.lines.reduce((sum: number, line: { totalCents: number }) => sum + line.totalCents, 0),
-          disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document."
-        },
-        include: {
-          salesOrder: {
-            include: {
-              customer: true
-            }
-          }
-        }
-      });
+      const amountCents = order.lines.reduce((sum: number, line: { totalCents: number }) => sum + line.totalCents, 0);
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO "ConceptInvoice" (
+            id,
+            "salesOrderId",
+            "amountCents",
+            disclaimer,
+            status,
+            "sourceOrderUpdatedAt",
+            "sourceOrderAmountCents"
+          )
+          VALUES ($1, $2, $3, $4, 'issued', NOW(), $3)
+        `,
+        id,
+        order.id,
+        amountCents,
+        "Concept invoice for portfolio demo only. Not a fiscal document."
+      );
+      return id;
     });
 
-    const conceptInvoice: ConceptInvoice = {
-      id: invoice.id,
-      salesOrderId: invoice.salesOrderId,
-      customerName: invoice.salesOrder.customer.name,
-      amount: fromCents(invoice.amountCents),
-      issuedAt: invoice.issuedAt.toISOString(),
-      disclaimer: invoice.disclaimer
-    };
+    const conceptInvoice = await fetchConceptInvoiceRaw(invoiceId);
+    if (!conceptInvoice) {
+      throw new Error(`Concept invoice ${invoiceId} not found after creation.`);
+    }
 
-    await audit("create_concept_invoice", `Created concept invoice ${invoice.id}`, {
-      salesOrderId: invoice.salesOrderId,
+    await audit("create_concept_invoice", `Created concept invoice ${conceptInvoice.id}`, {
+      salesOrderId: conceptInvoice.salesOrderId,
       amount: conceptInvoice.amount
     });
     return conceptInvoice;
+  }
+
+  async cancelConceptInvoice(input: { invoiceId: string }) {
+    await ensureSeeded();
+    await ensureInvoiceSchema();
+    const invoice = await fetchConceptInvoiceRaw(input.invoiceId);
+    if (!invoice) {
+      throw new Error(`Concept invoice ${input.invoiceId} not found.`);
+    }
+    if (invoice.status !== "canceled") {
+      await prisma.$executeRawUnsafe(
+        'UPDATE "ConceptInvoice" SET status = $1, "canceledAt" = NOW() WHERE id = $2',
+        "canceled",
+        input.invoiceId
+      );
+    }
+    const canceledInvoice = await fetchConceptInvoiceRaw(input.invoiceId);
+    if (!canceledInvoice) {
+      throw new Error(`Concept invoice ${input.invoiceId} not found after cancellation.`);
+    }
+    await audit("cancel_concept_invoice", `Canceled concept invoice ${input.invoiceId}`, {
+      invoiceId: input.invoiceId
+    });
+    return canceledInvoice;
+  }
+
+  async reissueConceptInvoice(input: { invoiceId: string }) {
+    await ensureSeeded();
+    await ensureInvoiceSchema();
+    const sourceInvoice = await fetchConceptInvoiceRaw(input.invoiceId);
+    if (!sourceInvoice) {
+      throw new Error(`Concept invoice ${input.invoiceId} not found.`);
+    }
+
+    const newInvoiceId = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      const order = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: sourceInvoice.salesOrderId },
+        include: {
+          lines: true
+        }
+      });
+      const id = await nextBusinessId(tx, "concept_invoice", "CI", 5001);
+      const amountCents = order.lines.reduce((sum: number, line: { totalCents: number }) => sum + line.totalCents, 0);
+      await tx.$executeRawUnsafe(
+        'UPDATE "ConceptInvoice" SET status = $1, "canceledAt" = COALESCE("canceledAt", NOW()), "replacedByInvoiceId" = $2 WHERE id = $3',
+        "reissued",
+        id,
+        sourceInvoice.id
+      );
+      await tx.$executeRawUnsafe(
+        `
+          INSERT INTO "ConceptInvoice" (
+            id,
+            "salesOrderId",
+            "amountCents",
+            disclaimer,
+            status,
+            "reissuedFromInvoiceId",
+            "sourceOrderUpdatedAt",
+            "sourceOrderAmountCents"
+          )
+          VALUES ($1, $2, $3, $4, 'issued', $5, NOW(), $3)
+        `,
+        id,
+        sourceInvoice.salesOrderId,
+        amountCents,
+        "Concept invoice for portfolio demo only. Not a fiscal document.",
+        sourceInvoice.id
+      );
+      return id;
+    });
+
+    const invoice = await fetchConceptInvoiceRaw(newInvoiceId);
+    if (!invoice) {
+      throw new Error(`Concept invoice ${newInvoiceId} not found after reissue.`);
+    }
+    await audit("reissue_concept_invoice", `Reissued concept invoice ${sourceInvoice.id} as ${invoice.id}`, {
+      invoiceId: invoice.id,
+      sourceInvoiceId: sourceInvoice.id,
+      salesOrderId: invoice.salesOrderId
+    });
+    return invoice;
+  }
+
+  async getConceptInvoice(input: { invoiceId: string }) {
+    await ensureSeeded();
+    const invoice = await fetchConceptInvoiceRaw(input.invoiceId);
+    await audit("get_concept_invoice", `Fetched concept invoice ${input.invoiceId}`);
+    return invoice;
+  }
+
+  async listConceptInvoices(input: ListConceptInvoicesInput = {}) {
+    await ensureSeeded();
+    const invoices = await fetchConceptInvoicesRaw(input);
+    await audit("list_concept_invoices", "Listed concept invoices", {
+      salesOrderId: input.salesOrderId ?? null,
+      dateRange: input.dateRange ?? "all_time",
+      status: input.status ?? null,
+      resultCount: invoices.length
+    });
+    return invoices;
   }
 
   async getSalesOrder(input: { salesOrderId: string }) {

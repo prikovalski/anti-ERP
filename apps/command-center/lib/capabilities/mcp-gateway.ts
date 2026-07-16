@@ -1,6 +1,7 @@
 import {
   ConceptInvoiceSchema,
   CustomerSchema,
+  ListConceptInvoicesInputSchema,
   ProductSchema,
   SupplierSchema,
   AnalyticsResultSchema,
@@ -46,7 +47,13 @@ const salesOrderTools = new Set([
   "list_sales_orders",
   "list_recent_orders"
 ]);
-const invoiceTools = new Set(["create_concept_invoice"]);
+const invoiceTools = new Set([
+  "create_concept_invoice",
+  "cancel_concept_invoice",
+  "reissue_concept_invoice",
+  "get_concept_invoice",
+  "list_concept_invoices"
+]);
 const analyticsTools = new Set(["get_traditional_erp_flow", "query_sales_metrics"]);
 const MCP_CONNECT_TIMEOUT_MS = Number(process.env.MCP_CONNECT_TIMEOUT_MS ?? 5000);
 const MCP_TOOL_TIMEOUT_MS = Number(process.env.MCP_TOOL_TIMEOUT_MS ?? 8000);
@@ -349,6 +356,22 @@ export class McpCapabilityGateway implements CapabilityGateway {
 
   async createConceptInvoice(input: { salesOrderId: string }) {
     return callTool("create_concept_invoice", input, ConceptInvoiceSchema);
+  }
+
+  async cancelConceptInvoice(input: { invoiceId: string }) {
+    return callTool("cancel_concept_invoice", input, ConceptInvoiceSchema);
+  }
+
+  async reissueConceptInvoice(input: { invoiceId: string }) {
+    return callTool("reissue_concept_invoice", input, ConceptInvoiceSchema);
+  }
+
+  async getConceptInvoice(input: { invoiceId: string }) {
+    return callTool("get_concept_invoice", input, ConceptInvoiceSchema.nullable());
+  }
+
+  async listConceptInvoices(input: z.infer<typeof ListConceptInvoicesInputSchema> = {}) {
+    return callTool("list_concept_invoices", input, z.array(ConceptInvoiceSchema));
   }
 
   async getSalesOrder(input: { salesOrderId: string }) {

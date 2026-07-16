@@ -59,12 +59,18 @@ model SalesOrderLine {
 }
 
 model ConceptInvoice {
-  id           String     @id
-  salesOrderId String
-  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
-  amountCents  Int
-  disclaimer   String
-  issuedAt     DateTime   @default(now())
+  id                    String     @id
+  salesOrderId          String
+  salesOrder            SalesOrder @relation(fields: [salesOrderId], references: [id])
+  amountCents           Int
+  disclaimer            String
+  status                String     @default("issued")
+  canceledAt            DateTime?
+  reissuedFromInvoiceId String?
+  replacedByInvoiceId   String?
+  sourceOrderUpdatedAt  DateTime?
+  sourceOrderAmountCents Int       @default(0)
+  issuedAt              DateTime   @default(now())
 }
 
 model SequenceCounter {

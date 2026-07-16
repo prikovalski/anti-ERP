@@ -855,6 +855,9 @@ function inferDocumentTitle(response: AgentResponse) {
   if (firstAuditAction.includes("create_supplier") || text.includes("fornecedor")) {
     return "Cadastro de fornecedor";
   }
+  if (firstAuditAction.includes("list_concept_invoices") || text.includes("nota(s) fiscal")) {
+    return "Lista de notas fiscais";
+  }
   if (firstAuditAction.includes("list_sales_orders") || firstAuditAction.includes("list_recent_orders") || text.includes("pedido")) {
     return "Lista de pedidos";
   }
@@ -886,6 +889,9 @@ function parseResultTable(document: DocumentMessage): ResultTable | null {
   }
   if (document.title === "Cadastro de cliente" && document.text.toLowerCase().includes("cliente(s):")) {
     return parseCustomerList(document.text);
+  }
+  if (document.title === "Lista de notas fiscais") {
+    return parseInvoiceList(document.text);
   }
   return null;
 }
@@ -939,6 +945,32 @@ function parseCustomerList(text: string): ResultTable | null {
   };
 }
 
+function parseInvoiceList(text: string): ResultTable | null {
+  const items = extractSemicolonItems(text);
+  const rows = items
+    .map((item) => {
+      const match = item.match(/^(CI-\d+)\s+do\s+pedido\s+(SO-\d+)\s+para\s+(.+?)\s+\((.+?)\)$/i);
+      if (!match) {
+        return null;
+      }
+      const details = (match[4] ?? "").split(",").map((part) => part.trim());
+      const status = details[0] ?? "-";
+      const amount = details.find((part) => /^valor\s+/i.test(part))?.replace(/^valor\s+/i, "") ?? "-";
+      const changed = details.find((part) => /pedido/i.test(part)) ?? "-";
+      return [match[1] ?? "-", match[2] ?? "-", match[3] ?? "-", status, amount, changed];
+    })
+    .filter((row): row is string[] => Boolean(row));
+
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    title: "Notas fiscais",
+    columns: ["NF", "Pedido", "Cliente", "Status", "Valor", "Pedido"],
+    rows
+  };
+}
+
 function extractSemicolonItems(text: string) {
   const listSegment = text.includes(":") ? text.slice(text.indexOf(":") + 1) : "";
   return listSegment
@@ -951,6 +983,9 @@ function extractSemicolonItems(text: string) {
 function buildResultTableColumns(count: number) {
   if (count === 5) {
     return "130px minmax(220px, 1fr) 130px 120px 150px";
+  }
+  if (count === 6) {
+    return "120px 120px minmax(220px, 1fr) 130px 150px 210px";
   }
   if (count === 3) {
     return "minmax(240px, 1fr) 180px 130px";

@@ -5,6 +5,7 @@ import type {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  ListConceptInvoicesInput,
   ListSalesOrdersInput,
   Product,
   SalesOrder,
@@ -56,6 +57,10 @@ export interface CapabilityGateway {
   cancelSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
   duplicateSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
   createConceptInvoice(input: { salesOrderId: string }): Promise<ConceptInvoice>;
+  cancelConceptInvoice(input: { invoiceId: string }): Promise<ConceptInvoice>;
+  reissueConceptInvoice(input: { invoiceId: string }): Promise<ConceptInvoice>;
+  getConceptInvoice(input: { invoiceId: string }): Promise<ConceptInvoice | null>;
+  listConceptInvoices(input?: ListConceptInvoicesInput): Promise<ConceptInvoice[]>;
   getSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder | null>;
   listSalesOrders(input?: ListSalesOrdersInput): Promise<SalesOrder[]>;
   listRecentOrders(): Promise<SalesOrder[]>;

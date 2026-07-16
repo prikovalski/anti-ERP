@@ -51,7 +51,13 @@ export const ConceptInvoiceSchema = z.object({
   customerName: z.string(),
   amount: z.number().nonnegative(),
   issuedAt: z.string(),
-  disclaimer: z.string()
+  disclaimer: z.string(),
+  status: z.enum(["issued", "canceled", "reissued"]).default("issued"),
+  canceledAt: z.string().nullable().optional(),
+  reissuedFromInvoiceId: z.string().nullable().optional(),
+  replacedByInvoiceId: z.string().nullable().optional(),
+  sourceOrderUpdatedAt: z.string().nullable().optional(),
+  orderChangedAfterIssue: z.boolean().default(false)
 });
 
 export const AuditEventSchema = z.object({
@@ -142,6 +148,27 @@ export const DuplicateSalesOrderInputSchema = z.object({
 
 export const CreateConceptInvoiceInputSchema = z.object({
   salesOrderId: z.string()
+});
+
+export const CancelConceptInvoiceInputSchema = z.object({
+  invoiceId: z.string()
+});
+
+export const ReissueConceptInvoiceInputSchema = z.object({
+  invoiceId: z.string()
+});
+
+export const GetConceptInvoiceInputSchema = z.object({
+  invoiceId: z.string()
+});
+
+export const ConceptInvoiceStatusSchema = z.enum(["issued", "canceled", "reissued"]);
+
+export const ListConceptInvoicesInputSchema = z.object({
+  salesOrderId: z.string().nullable().optional(),
+  dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+  status: ConceptInvoiceStatusSchema.nullable().optional(),
+  take: z.number().int().positive().max(100).nullable().optional()
 });
 
 export const GetSalesOrderInputSchema = z.object({
@@ -361,6 +388,8 @@ export type SalesOrderLine = z.infer<typeof SalesOrderLineSchema>;
 export type SalesOrderPreview = z.infer<typeof SalesOrderPreviewSchema>;
 export type SalesOrder = z.infer<typeof SalesOrderSchema>;
 export type ConceptInvoice = z.infer<typeof ConceptInvoiceSchema>;
+export type ConceptInvoiceStatus = z.infer<typeof ConceptInvoiceStatusSchema>;
+export type ListConceptInvoicesInput = z.infer<typeof ListConceptInvoicesInputSchema>;
 export type AuditEvent = z.infer<typeof AuditEventSchema>;
 export type AnalyticsMetric = z.infer<typeof AnalyticsMetricSchema>;
 export type AnalyticsDateRange = z.infer<typeof AnalyticsDateRangeSchema>;

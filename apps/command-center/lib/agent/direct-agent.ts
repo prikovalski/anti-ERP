@@ -3,6 +3,9 @@ import type {
   AnalyticsDateRange,
   AnalyticsGroupBy,
   AnalyticsMetric,
+  ConceptInvoice,
+  ConceptInvoiceStatus,
+  ListConceptInvoicesInput,
   ListSalesOrdersInput,
   SalesOrder,
   SalesOrderStatus
@@ -53,6 +56,53 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   const gateway = await getCapabilityGateway();
+  const explicitInvoiceCommand = parseExplicitInvoiceCommand(input.message);
+  if (explicitInvoiceCommand.action === "create") {
+    const salesOrderId = explicitInvoiceCommand.salesOrderId ?? input.lastOrderId ?? null;
+    if (!salesOrderId) {
+      return response("Qual pedido devo usar para emitir a nota fiscal? Informe o numero do pedido.");
+    }
+    const invoice = await gateway.createConceptInvoice({ salesOrderId });
+    return response(`Nota fiscal conceitual ${invoice.id} emitida para o pedido ${invoice.salesOrderId}.`, {
+      invoice,
+      lastOrderId: invoice.salesOrderId,
+      auditEvents: [audit("create_concept_invoice", `Nota fiscal emitida: ${invoice.id}.`)]
+    });
+  }
+  if (explicitInvoiceCommand.action === "get" && explicitInvoiceCommand.invoiceId) {
+    const invoice = await gateway.getConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
+    if (!invoice) {
+      return response(`Nao encontrei a nota fiscal ${explicitInvoiceCommand.invoiceId}.`);
+    }
+    return response(describeInvoice(invoice), {
+      invoice,
+      lastOrderId: invoice.salesOrderId,
+      auditEvents: [audit("get_concept_invoice", `Nota fiscal consultada: ${invoice.id}.`)]
+    });
+  }
+  if (explicitInvoiceCommand.action === "cancel" && explicitInvoiceCommand.invoiceId) {
+    const invoice = await gateway.cancelConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
+    return response(`Nota fiscal conceitual ${invoice.id} cancelada.`, {
+      invoice,
+      lastOrderId: invoice.salesOrderId,
+      auditEvents: [audit("cancel_concept_invoice", `Nota fiscal cancelada: ${invoice.id}.`)]
+    });
+  }
+  if (explicitInvoiceCommand.action === "reissue" && explicitInvoiceCommand.invoiceId) {
+    const invoice = await gateway.reissueConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
+    return response(`Nota fiscal ${explicitInvoiceCommand.invoiceId} reemitida como ${invoice.id}.`, {
+      invoice,
+      lastOrderId: invoice.salesOrderId,
+      auditEvents: [audit("reissue_concept_invoice", `Nota fiscal reemitida: ${explicitInvoiceCommand.invoiceId} -> ${invoice.id}.`)]
+    });
+  }
+  if (explicitInvoiceCommand.action === "list") {
+    const invoices = await gateway.listConceptInvoices(explicitInvoiceCommand.filters);
+    return response(formatInvoiceList(invoices, explicitInvoiceCommand.filters), {
+      auditEvents: [audit("list_concept_invoices", `Listadas ${invoices.length} nota(s) fiscal(is).`)]
+    });
+  }
+
   const explicitOrderCommand = parseExplicitOrderCommand(input.message);
 
   if (explicitOrderCommand.action === "get" && explicitOrderCommand.salesOrderId) {
@@ -115,6 +165,19 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     return response(`${result.label}: ${formatAnalyticsValue(result.metric, result.value)}.`, {
       analyticsResult: result,
       auditEvents: [audit("query_sales_metrics", "Relatorio gerencial executado pelo gateway direto.")]
+    });
+  }
+
+  if (intent.intent === "create_invoice") {
+    const salesOrderId = extractSalesOrderId(input.message) ?? input.lastOrderId ?? null;
+    if (!salesOrderId) {
+      return response("Qual pedido devo usar para emitir a nota fiscal? Informe o numero do pedido.");
+    }
+    const invoice = await gateway.createConceptInvoice({ salesOrderId });
+    return response(`Nota fiscal conceitual ${invoice.id} emitida para o pedido ${invoice.salesOrderId}.`, {
+      invoice,
+      lastOrderId: invoice.salesOrderId,
+      auditEvents: [audit("create_concept_invoice", `Nota fiscal emitida: ${invoice.id}.`)]
     });
   }
 
@@ -250,9 +313,74 @@ function parseExplicitOrderCommand(message: string): {
   return { action: null, salesOrderId, filters: {} };
 }
 
+function parseExplicitInvoiceCommand(message: string): {
+  action: "create" | "get" | "cancel" | "reissue" | "list" | null;
+  invoiceId: string | null;
+  salesOrderId: string | null;
+  filters: ListConceptInvoicesInput;
+} {
+  const normalized = normalizeText(message);
+  const invoiceId = extractInvoiceId(message);
+  const salesOrderId = extractSalesOrderId(message);
+  const mentionsInvoice = /\b(nota|notas|nf|nfs|nfe|nfes|fatura|faturas|invoice|invoices)\b/.test(normalized);
+  if (!mentionsInvoice) {
+    return { action: null, invoiceId, salesOrderId, filters: {} };
+  }
+  if (/\b(cancelar|cancele|cancela|cancelamento)\b/.test(normalized)) {
+    return { action: "cancel", invoiceId, salesOrderId, filters: {} };
+  }
+  if (/\b(reemitir|reemita|reemita|regerar|regere|segunda via|nova nota)\b/.test(normalized)) {
+    return { action: "reissue", invoiceId, salesOrderId, filters: {} };
+  }
+  if (invoiceId && /\b(consulte|consultar|mostre|mostrar|exiba|exibir|detalhe|detalhes|ver)\b/.test(normalized)) {
+    return { action: "get", invoiceId, salesOrderId, filters: {} };
+  }
+  if (asksToListInvoices(message)) {
+    return { action: "list", invoiceId: null, salesOrderId, filters: inferInvoiceListFilters(message) };
+  }
+  if (/\b(emitir|emita|gerar|gere|criar|crie)\b/.test(normalized) && (salesOrderId || /\bpedido\b/.test(normalized))) {
+    return { action: "create", invoiceId, salesOrderId, filters: {} };
+  }
+  return { action: null, invoiceId, salesOrderId, filters: {} };
+}
+
 function extractSalesOrderId(message: string) {
   const match = normalizeText(message).match(/\bso[-_\s]?(\d+)\b/);
   return match ? `SO-${match[1]}` : null;
+}
+
+function extractInvoiceId(message: string) {
+  const match = normalizeText(message).match(/\bci[-_\s]?(\d+)\b/);
+  return match ? `CI-${match[1]}` : null;
+}
+
+function asksToListInvoices(message: string) {
+  const normalized = normalizeText(message);
+  return /\b(liste|listar|mostre|mostrar|exiba|exibir|quais)\b/.test(normalized)
+    && /\b(notas|nota|nfs|nf|faturas)\b/.test(normalized);
+}
+
+function inferInvoiceListFilters(message: string): ListConceptInvoicesInput {
+  const normalized = normalizeText(message);
+  return {
+    salesOrderId: extractSalesOrderId(message),
+    dateRange: inferDateRange(message),
+    status: inferInvoiceStatus(normalized),
+    take: 25
+  };
+}
+
+function inferInvoiceStatus(normalized: string): ConceptInvoiceStatus | null {
+  if (/\b(cancelada|canceladas|cancelado|cancelados)\b/.test(normalized)) {
+    return "canceled";
+  }
+  if (/\b(reemitida|reemitidas|reemitido|reemitidos|substituida|substituidas)\b/.test(normalized)) {
+    return "reissued";
+  }
+  if (/\b(emitida|emitidas|emitido|emitidos|ativas|ativa)\b/.test(normalized)) {
+    return "issued";
+  }
+  return null;
 }
 
 function asksToListSalesOrders(message: string) {
@@ -321,6 +449,40 @@ function describeOrder(order: SalesOrder) {
     .map((line) => `${line.quantity}x ${line.name} (${formatMoney(line.total)})`)
     .join("; ");
   return `Pedido ${order.id} para ${order.customer.name}: ${translateStatus(order.status)}, ${items}, total ${formatMoney(order.subtotal)}.`;
+}
+
+function formatInvoiceList(invoices: ConceptInvoice[], filters: ListConceptInvoicesInput) {
+  if (!invoices.length) {
+    return "Nao encontrei notas fiscais para esses filtros.";
+  }
+  const scope = [
+    filters.salesOrderId ? `pedido ${filters.salesOrderId}` : null,
+    filters.status ? `status ${translateInvoiceStatus(filters.status)}` : null,
+    filters.dateRange && filters.dateRange !== "all_time" ? translateDateRange(filters.dateRange) : null
+  ].filter(Boolean).join(", ");
+  const prefix = scope ? `Encontrei ${invoices.length} nota(s) fiscal(is) para ${scope}` : `Encontrei ${invoices.length} nota(s) fiscal(is)`;
+  return `${prefix}: ${invoices
+    .slice(0, 8)
+    .map((invoice) =>
+      `${invoice.id} do pedido ${invoice.salesOrderId} para ${invoice.customerName} (${translateInvoiceStatus(invoice.status)}, valor ${formatMoney(invoice.amount)}, ${invoice.orderChangedAfterIssue ? "pedido alterado apos emissao" : "pedido sem alteracao"})`
+    )
+    .join("; ")}.`;
+}
+
+function describeInvoice(invoice: ConceptInvoice) {
+  const changed = invoice.orderChangedAfterIssue ? " O pedido foi alterado apos a emissao; reemissao recomendada." : "";
+  return `Nota fiscal ${invoice.id} do pedido ${invoice.salesOrderId}: ${translateInvoiceStatus(invoice.status)}, cliente ${invoice.customerName}, valor ${formatMoney(invoice.amount)}, emitida em ${formatDate(invoice.issuedAt)}.${changed}`;
+}
+
+function translateInvoiceStatus(status: ConceptInvoiceStatus) {
+  return status === "canceled" ? "cancelada" : status === "reissued" ? "reemitida" : "emitida";
+}
+
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(new Date(value));
 }
 
 function translateStatus(status: SalesOrderStatus) {

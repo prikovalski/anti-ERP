@@ -1,6 +1,7 @@
 import {
   AnalyticsResult,
   ConceptInvoice,
+  ListConceptInvoicesInput,
   ListSalesOrdersInput,
   SalesOrder,
   SalesOrderPreview,
@@ -398,10 +399,89 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       customerName: order.customer.name,
       amount: order.subtotal,
       issuedAt: now(),
-      disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document."
+      disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document.",
+      status: "issued",
+      canceledAt: null,
+      reissuedFromInvoiceId: null,
+      replacedByInvoiceId: null,
+      sourceOrderUpdatedAt: now(),
+      orderChangedAfterIssue: false
     };
     invoices.set(invoice.id, invoice);
     return invoice;
+  }
+
+  async cancelConceptInvoice(input: { invoiceId: string }) {
+    const invoice = invoices.get(input.invoiceId);
+    if (!invoice) {
+      throw new Error(`Concept invoice ${input.invoiceId} not found.`);
+    }
+    if (invoice.status !== "canceled") {
+      invoice.status = "canceled";
+      invoice.canceledAt = now();
+      invoices.set(invoice.id, invoice);
+    }
+    return invoice;
+  }
+
+  async reissueConceptInvoice(input: { invoiceId: string }) {
+    const sourceInvoice = invoices.get(input.invoiceId);
+    if (!sourceInvoice) {
+      throw new Error(`Concept invoice ${input.invoiceId} not found.`);
+    }
+    const order = salesOrders.get(sourceInvoice.salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${sourceInvoice.salesOrderId} not found.`);
+    }
+    const invoice: ConceptInvoice = {
+      id: createConceptInvoiceId(),
+      salesOrderId: order.id,
+      customerName: order.customer.name,
+      amount: order.subtotal,
+      issuedAt: now(),
+      disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document.",
+      status: "issued",
+      canceledAt: null,
+      reissuedFromInvoiceId: sourceInvoice.id,
+      replacedByInvoiceId: null,
+      sourceOrderUpdatedAt: now(),
+      orderChangedAfterIssue: false
+    };
+    sourceInvoice.status = "reissued";
+    sourceInvoice.canceledAt ??= now();
+    sourceInvoice.replacedByInvoiceId = invoice.id;
+    invoices.set(sourceInvoice.id, sourceInvoice);
+    invoices.set(invoice.id, invoice);
+    return invoice;
+  }
+
+  async getConceptInvoice(input: { invoiceId: string }) {
+    const invoice = invoices.get(input.invoiceId) ?? null;
+    if (!invoice) {
+      return null;
+    }
+    const order = salesOrders.get(invoice.salesOrderId);
+    return {
+      ...invoice,
+      orderChangedAfterIssue: order ? order.subtotal !== invoice.amount : invoice.orderChangedAfterIssue
+    };
+  }
+
+  async listConceptInvoices(input: ListConceptInvoicesInput = {}) {
+    const take = input.take ?? 25;
+    return Array.from(invoices.values())
+      .map((invoice) => {
+        const order = salesOrders.get(invoice.salesOrderId);
+        return {
+          ...invoice,
+          orderChangedAfterIssue: order ? order.subtotal !== invoice.amount : invoice.orderChangedAfterIssue
+        };
+      })
+      .filter((invoice) => !input.salesOrderId || invoice.salesOrderId === input.salesOrderId)
+      .filter((invoice) => !input.status || invoice.status === input.status)
+      .filter((invoice) => isInsideDateRange(invoice.issuedAt, input.dateRange ?? "all_time"))
+      .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt))
+      .slice(0, take);
   }
 
   async getSalesOrder(input: { salesOrderId: string }) {

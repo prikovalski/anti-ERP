@@ -539,7 +539,7 @@ p {
 
 .result-table-row {
   display: grid;
-  min-width: 720px;
+  min-width: 920px;
   border-top: 1px solid #e5e9ee;
 }
 
