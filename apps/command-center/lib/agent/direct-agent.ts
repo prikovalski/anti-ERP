@@ -6,7 +6,9 @@ import type {
   ConceptInvoice,
   ConceptInvoiceStatus,
   Customer,
+  InventoryMovement,
   ListConceptInvoicesInput,
+  ListInventoryMovementsInput,
   ListSalesOrdersInput,
   Product,
   SalesOrder,
@@ -122,6 +124,105 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       const updated = await gateway.updateCustomer({ customerId: customer.id, name: explicitCatalogCommand.nextName });
       return response(`Cliente renomeado para ${updated.name}.`, { auditEvents: [audit("update_customer", `Cliente renomeado: ${updated.name}.`)] });
     }
+  }
+
+  const explicitInventoryCommand = parseExplicitInventoryCommand(input.message);
+  if (explicitInventoryCommand.action) {
+    if (explicitInventoryCommand.action === "low_stock") {
+      const products = await gateway.listLowStockProducts({ threshold: explicitInventoryCommand.threshold ?? 10 });
+      const text = products.length
+        ? `Produtos com estoque baixo: ${products.map((product) => `${product.name} (${product.sku}, disponivel ${product.availableStock}, reservado ${product.reservedStock ?? 0})`).join("; ")}.`
+        : "Nenhum produto esta com estoque baixo.";
+      return response(text, {
+        auditEvents: [audit("list_low_stock_products", `Encontrados ${products.length} produto(s) com estoque baixo.`)]
+      });
+    }
+
+    if (explicitInventoryCommand.action === "history") {
+      const product = explicitInventoryCommand.productQuery
+        ? await resolveProductByQuery(gateway, explicitInventoryCommand.productQuery)
+        : null;
+      if (explicitInventoryCommand.productQuery && !product) {
+        return response(`Nao encontrei o produto ${explicitInventoryCommand.productQuery}.`);
+      }
+      const filters: ListInventoryMovementsInput = {
+        productId: product?.id ?? null,
+        salesOrderId: explicitInventoryCommand.salesOrderId,
+        type: explicitInventoryCommand.type,
+        dateRange: inferDateRange(input.message),
+        take: 25
+      };
+      const movements = await gateway.listInventoryMovements(filters);
+      return response(formatInventoryMovementList(movements, filters), {
+        auditEvents: [audit("list_inventory_movements", `Listadas ${movements.length} movimentacao(oes) de estoque.`)]
+      });
+    }
+
+    if (explicitInventoryCommand.action === "writeoff") {
+      const salesOrderId = explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null;
+      if (!salesOrderId) {
+        return response("Qual pedido devo usar para baixar o estoque?");
+      }
+      const order = await gateway.getSalesOrder({ salesOrderId });
+      if (!order) {
+        return response(`Nao encontrei o pedido ${salesOrderId}.`);
+      }
+      let movements: InventoryMovement[];
+      try {
+        movements = await gateway.writeOffInventoryForSalesOrder({
+          salesOrderId,
+          reason: `Baixa por pedido ${salesOrderId}`
+        });
+      } catch (error) {
+        return response(formatInventoryError(error));
+      }
+      return response(`Baixa de estoque realizada para o pedido ${salesOrderId}: ${formatInventoryMovementItems(movements)}.`, {
+        lastOrderId: salesOrderId,
+        auditEvents: [audit("inventory_order_writeoff", `Baixa por pedido executada: ${salesOrderId}.`)]
+      });
+    }
+
+    if (!explicitInventoryCommand.productQuery) {
+      return response("Qual produto devo movimentar no estoque?");
+    }
+    const product = await resolveProductByQuery(gateway, explicitInventoryCommand.productQuery);
+    if (!product) {
+      return response(`Nao encontrei o produto ${explicitInventoryCommand.productQuery}.`);
+    }
+    if (explicitInventoryCommand.quantity == null) {
+      return response(`Qual quantidade devo usar para movimentar o estoque de ${product.name}?`);
+    }
+
+    const reason = explicitInventoryReason(explicitInventoryCommand.action, input.message);
+    let movement: InventoryMovement;
+    try {
+      movement =
+        explicitInventoryCommand.action === "entry"
+          ? await gateway.createInventoryEntry({ productId: product.id, quantity: explicitInventoryCommand.quantity, reason })
+          : explicitInventoryCommand.action === "exit"
+            ? await gateway.createInventoryExit({ productId: product.id, quantity: explicitInventoryCommand.quantity, reason })
+            : explicitInventoryCommand.action === "adjustment"
+              ? await gateway.adjustInventory({ productId: product.id, quantity: explicitInventoryCommand.quantity, reason })
+              : explicitInventoryCommand.action === "reservation"
+                ? await gateway.reserveInventory({
+                  productId: product.id,
+                  quantity: explicitInventoryCommand.quantity,
+                  salesOrderId: explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null,
+                  reason
+                })
+                : await gateway.releaseInventoryReservation({
+                  productId: product.id,
+                  quantity: explicitInventoryCommand.quantity,
+                  salesOrderId: explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null,
+                  reason
+                });
+    } catch (error) {
+      return response(formatInventoryError(error));
+    }
+    return response(formatInventoryMovement(movement), {
+      lastOrderId: explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null,
+      auditEvents: [audit(`inventory_${explicitInventoryCommand.action}`, `Estoque movimentado: ${product.name}.`)]
+    });
   }
 
   const explicitInvoiceCommand = parseExplicitInvoiceCommand(input.message);
@@ -364,6 +465,127 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   return response("Nao consegui executar esse comando pelo executor local. Tente ser mais especifica.");
+}
+
+function parseExplicitInventoryCommand(message: string): {
+  action: "entry" | "exit" | "adjustment" | "reservation" | "reservation_release" | "writeoff" | "history" | "low_stock" | null;
+  productQuery: string | null;
+  quantity: number | null;
+  salesOrderId: string | null;
+  threshold: number | null;
+  type: InventoryMovement["type"] | null;
+} {
+  const normalized = normalizeText(message);
+  const salesOrderId = extractSalesOrderId(message);
+  const mentionsInventory =
+    /\b(estoque|estoques|entrada|saida|ajuste|ajustar|reserve|reservar|reserva|reservado|libere|liberar|baixa|baixar|baixe|historico|movimentacoes)\b/.test(normalized);
+  if (!mentionsInventory) {
+    return { action: null, productQuery: null, quantity: null, salesOrderId, threshold: null, type: null };
+  }
+
+  const quantity = extractInventoryQuantity(message);
+  const productQuery = extractInventoryProductQuery(message);
+  const threshold = extractThreshold(message);
+  const type = inferInventoryMovementType(normalized);
+
+  if (/\b(baixo|baixa|minimo|minima|critico|critica|alerta)\b/.test(normalized) && /\bestoque\b/.test(normalized)) {
+    return { action: "low_stock", productQuery: null, quantity: null, salesOrderId, threshold, type: null };
+  }
+  if (/\b(historico|movimentacoes|movimentos|extrato|liste|listar|mostre|mostrar|consultar|consulte)\b/.test(normalized)
+    && /\b(estoque|movimentacoes|movimentos)\b/.test(normalized)) {
+    return { action: "history", productQuery, quantity: null, salesOrderId, threshold: null, type };
+  }
+  if (/\b(baixa|baixar|baixe)\b/.test(normalized) && /\bpedido\b/.test(normalized)) {
+    return { action: "writeoff", productQuery: null, quantity: null, salesOrderId, threshold: null, type: null };
+  }
+  if (/\b(libere|liberar|libera|solte|soltar|cancelar reserva|cancele reserva)\b/.test(normalized)) {
+    return { action: "reservation_release", productQuery, quantity, salesOrderId, threshold: null, type: null };
+  }
+  if (/\b(reserve|reservar|reserva)\b/.test(normalized)) {
+    return { action: "reservation", productQuery, quantity, salesOrderId, threshold: null, type: null };
+  }
+  if (/\b(ajuste|ajustar|ajusta|atualize|atualizar|defina|definir)\b/.test(normalized) && /\bestoque\b/.test(normalized)) {
+    return { action: "adjustment", productQuery, quantity, salesOrderId, threshold: null, type: null };
+  }
+  if (/\b(entrada|entrar|recebimento|receber|adicione|adicionar|inclua|incluir)\b/.test(normalized) && /\bestoque|produto|unidade|unidades\b/.test(normalized)) {
+    return { action: "entry", productQuery, quantity, salesOrderId, threshold: null, type: null };
+  }
+  if (/\b(saida|retirada|retirar|remova|remover)\b/.test(normalized) && /\bestoque|produto|unidade|unidades\b/.test(normalized)) {
+    return { action: "exit", productQuery, quantity, salesOrderId, threshold: null, type: null };
+  }
+  return { action: null, productQuery: null, quantity: null, salesOrderId, threshold: null, type: null };
+}
+
+function extractInventoryQuantity(message: string) {
+  const normalized = normalizeText(message);
+  const adjustment = normalized.match(/\b(?:para|em)\s+(\d+)\b/);
+  if (adjustment && /\b(ajuste|ajustar|atualize|defina|estoque)\b/.test(normalized)) {
+    return Number(adjustment[1]);
+  }
+  const match = normalized.match(/\b(\d+)\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function extractInventoryProductQuery(message: string) {
+  const productLabelMatch = message.match(/\bproduto\s+(.+?)(?=\s+(?:para|pra|com|no|na|do|da|em|ao|a)\s+(?:o\s+|a\s+)?(?:pedido|estoque|\d)|[.!?]?$)/i);
+  if (productLabelMatch?.[1]) {
+    return normalizeProductQuery(cleanCatalogQuery(productLabelMatch[1]));
+  }
+  const quantityProductMatch = message.match(/\b\d+\s+(?:unidades?\s+)?(?:d[eo]s?\s+)?(.+?)(?=\s+(?:para|pra|no|na|do|da)\s+(?:o\s+|a\s+)?(?:pedido|estoque)|[.!?]?$)/i);
+  if (quantityProductMatch?.[1]) {
+    return normalizeProductQuery(cleanCatalogQuery(quantityProductMatch[1]));
+  }
+  const stockProductMatch = message.match(/\b(?:estoque|entrada|saida|reserva)\s+(?:d[eo]\s+)?(?:produto\s+)?(.+?)(?=\s+(?:para|pra|no|na|do|da)\s+(?:o\s+|a\s+)?pedido|[.!?]?$)/i);
+  if (stockProductMatch?.[1] && !/\b(pedido|baixo|baixa|minimo|historico|movimentacoes)\b/i.test(stockProductMatch[1])) {
+    return normalizeProductQuery(cleanCatalogQuery(stockProductMatch[1]));
+  }
+  return null;
+}
+
+function normalizeProductQuery(value: string) {
+  const cleaned = value
+    .replace(/\s+(?:para|pra|no|na|do|da)\s+(?:o\s+|a\s+)?pedido\b.*$/i, "")
+    .replace(/\b(?:unidade|unidades|itens|item)\b/gi, "")
+    .replace(/\b(?:para|pra|no|na|do|da|de)\b\s*$/i, "")
+    .trim();
+  const dictionary: Record<string, string> = {
+    monitores: "monitor",
+    notebooks: "notebook",
+    mouses: "mouse",
+    teclados: "teclado"
+  };
+  const normalized = normalizeText(cleaned);
+  return dictionary[normalized] ?? cleaned.replace(/s$/i, "");
+}
+
+function extractThreshold(message: string) {
+  const match = normalizeText(message).match(/\b(?:abaixo de|menor que|ate|<=?)\s*(\d+)\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function inferInventoryMovementType(normalized: string): InventoryMovement["type"] | null {
+  if (/\bentrada|recebimento\b/.test(normalized)) return "entry";
+  if (/\bsaida|retirada\b/.test(normalized)) return "exit";
+  if (/\bajuste|manual\b/.test(normalized)) return "adjustment";
+  if (/\breserva\b/.test(normalized) && /\b(libere|liberar|cancelar|cancele)\b/.test(normalized)) return "reservation_release";
+  if (/\breserva|reservado\b/.test(normalized)) return "reservation";
+  if (/\bbaixa|pedido\b/.test(normalized)) return "order_writeoff";
+  return null;
+}
+
+function explicitInventoryReason(action: NonNullable<ReturnType<typeof parseExplicitInventoryCommand>["action"]>, message: string) {
+  const salesOrderId = extractSalesOrderId(message);
+  if (action === "entry") return "Entrada de estoque por comando em linguagem natural";
+  if (action === "exit") return "Saida de estoque por comando em linguagem natural";
+  if (action === "adjustment") return "Ajuste manual de estoque por comando em linguagem natural";
+  if (action === "reservation") return salesOrderId ? `Reserva para pedido ${salesOrderId}` : "Reserva de estoque por comando em linguagem natural";
+  if (action === "reservation_release") return salesOrderId ? `Liberacao de reserva do pedido ${salesOrderId}` : "Liberacao de reserva por comando em linguagem natural";
+  return "Movimentacao de estoque por comando em linguagem natural";
+}
+
+async function resolveProductByQuery(gateway: Awaited<ReturnType<typeof getCapabilityGateway>>, query: string) {
+  const matches = await gateway.searchProduct({ query });
+  return matches[0] ?? null;
 }
 
 function parseExplicitOrderCommand(message: string): {
@@ -642,8 +864,62 @@ function formatProductList(products: Product[]) {
   if (!products.length) return "Nao encontrei produtos para esses filtros.";
   return `Encontrei ${products.length} produto(s): ${products
     .slice(0, 12)
-    .map((product) => `${product.name} (${product.sku}, ${product.status === "inactive" ? "inativo" : "ativo"}, estoque ${product.availableStock}, preco ${formatMoney(product.unitPrice)})`)
+    .map((product) => `${product.name} (${product.sku}, ${product.status === "inactive" ? "inativo" : "ativo"}, disponivel ${product.availableStock}, reservado ${product.reservedStock ?? 0}, preco ${formatMoney(product.unitPrice)})`)
     .join("; ")}.`;
+}
+
+function formatInventoryMovement(movement: InventoryMovement) {
+  return `Movimentacao de estoque registrada: ${movement.productName} (${movement.sku}), ${translateInventoryMovementType(movement.type)}, quantidade ${movement.quantity}, disponivel ${movement.previousAvailableStock} -> ${movement.nextAvailableStock}, reservado ${movement.previousReservedStock} -> ${movement.nextReservedStock}.`;
+}
+
+function formatInventoryMovementList(movements: InventoryMovement[], filters: ListInventoryMovementsInput) {
+  if (!movements.length) {
+    return "Nao encontrei movimentacoes de estoque para esses filtros.";
+  }
+  const scope = [
+    filters.salesOrderId ? `pedido ${filters.salesOrderId}` : null,
+    filters.type ? translateInventoryMovementType(filters.type) : null,
+    filters.dateRange && filters.dateRange !== "all_time" ? translateDateRange(filters.dateRange) : null
+  ].filter(Boolean).join(", ");
+  const prefix = scope ? `Historico de estoque para ${scope}` : "Historico de estoque";
+  return `${prefix}: ${formatInventoryMovementItems(movements)}.`;
+}
+
+function formatInventoryMovementItems(movements: InventoryMovement[]) {
+  return movements
+    .slice(0, 25)
+    .map((movement) =>
+      `${formatDate(movement.createdAt)} | ${movement.productName} | ${translateInventoryMovementType(movement.type)} | qtd ${movement.quantity} | disponivel ${movement.previousAvailableStock} -> ${movement.nextAvailableStock} | reservado ${movement.previousReservedStock} -> ${movement.nextReservedStock} | ${movement.salesOrderId ?? "-"} | ${movement.reason ?? "-"}`
+    )
+    .join("; ");
+}
+
+function translateInventoryMovementType(type: InventoryMovement["type"]) {
+  const labels: Record<InventoryMovement["type"], string> = {
+    entry: "entrada",
+    exit: "saida",
+    adjustment: "ajuste manual",
+    reservation: "reserva",
+    reservation_release: "liberacao de reserva",
+    order_writeoff: "baixa por pedido"
+  };
+  return labels[type];
+}
+
+function formatInventoryError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Erro desconhecido.";
+  const stockMatch = message.match(/has only\s+(\d+)\s+(?:units available|reserved units)/i);
+  if (/insufficient stock/i.test(message) || /units available/i.test(message)) {
+    return stockMatch
+      ? `Nao executei a movimentacao porque o estoque disponivel e ${stockMatch[1]} unidade(s).`
+      : "Nao executei a movimentacao porque nao ha estoque disponivel suficiente.";
+  }
+  if (/reserved units/i.test(message)) {
+    return stockMatch
+      ? `Nao executei a liberacao porque existem apenas ${stockMatch[1]} unidade(s) reservada(s).`
+      : "Nao executei a liberacao porque a reserva disponivel e insuficiente.";
+  }
+  return `Nao consegui movimentar o estoque: ${message}`;
 }
 
 function describeInvoice(invoice: ConceptInvoice) {

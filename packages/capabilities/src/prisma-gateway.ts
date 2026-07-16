@@ -2,7 +2,9 @@ import {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  InventoryMovement,
   ListConceptInvoicesInput,
+  ListInventoryMovementsInput,
   ListSalesOrdersInput,
   Product,
   SalesOrder,
@@ -35,6 +37,7 @@ type DbProduct = {
   name: string;
   unitPriceCents: number;
   availableStock: number;
+  reservedStock?: number;
   status?: "active" | "inactive";
 };
 
@@ -77,6 +80,22 @@ type RawConceptInvoiceRow = {
   current_order_amount_cents: number;
 };
 
+type RawInventoryMovementRow = {
+  id: string;
+  product_id: string;
+  sku: string;
+  product_name: string;
+  sales_order_id: string | null;
+  type: InventoryMovement["type"];
+  quantity: number;
+  previous_available_stock: number;
+  next_available_stock: number;
+  previous_reserved_stock: number;
+  next_reserved_stock: number;
+  reason: string | null;
+  created_at: Date;
+};
+
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
 };
@@ -94,6 +113,7 @@ if (process.env.NODE_ENV !== "production") {
 let seedPromise: Promise<void> | null = null;
 let invoiceSchemaPromise: Promise<void> | null = null;
 let productSchemaPromise: Promise<void> | null = null;
+let inventorySchemaPromise: Promise<void> | null = null;
 
 function ensureSeeded() {
   seedPromise ??= seedDemoData();
@@ -106,10 +126,16 @@ function ensureInvoiceSchema() {
 }
 
 function ensureProductSchema() {
-  productSchemaPromise ??= prisma
-    .$executeRawUnsafe('ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT \'active\'')
-    .then(() => undefined);
+  productSchemaPromise ??= Promise.all([
+    prisma.$executeRawUnsafe('ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT \'active\''),
+    prisma.$executeRawUnsafe('ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS "reservedStock" INTEGER NOT NULL DEFAULT 0')
+  ]).then(() => undefined);
   return productSchemaPromise;
+}
+
+function ensureInventorySchema() {
+  inventorySchemaPromise ??= ensureInventoryTables();
+  return inventorySchemaPromise;
 }
 
 function normalize(value: string) {
@@ -167,6 +193,7 @@ function mapProduct(product: {
   name: string;
   unitPriceCents: number;
   availableStock: number;
+  reservedStock?: number | null;
   status?: "active" | "inactive" | string | null;
 }): Product {
   return {
@@ -175,6 +202,7 @@ function mapProduct(product: {
     name: product.name,
     unitPrice: fromCents(product.unitPriceCents),
     availableStock: product.availableStock,
+    reservedStock: product.reservedStock ?? 0,
     status: product.status === "inactive" ? "inactive" : "active"
   };
 }
@@ -336,6 +364,191 @@ async function ensureConceptInvoiceColumns() {
     SET "sourceOrderAmountCents" = ci."amountCents"
     WHERE ci."sourceOrderAmountCents" = 0
   `);
+}
+
+async function ensureInventoryTables() {
+  await ensureProductSchema();
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS "InventoryMovement" (
+      id TEXT PRIMARY KEY,
+      "productId" TEXT NOT NULL REFERENCES "Product"(id),
+      "salesOrderId" TEXT,
+      type TEXT NOT NULL,
+      quantity INTEGER NOT NULL,
+      "previousAvailableStock" INTEGER NOT NULL,
+      "nextAvailableStock" INTEGER NOT NULL,
+      "previousReservedStock" INTEGER NOT NULL,
+      "nextReservedStock" INTEGER NOT NULL,
+      reason TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT NOW()
+    )
+  `);
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "InventoryMovement_productId_idx" ON "InventoryMovement" ("productId")');
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "InventoryMovement_salesOrderId_idx" ON "InventoryMovement" ("salesOrderId")');
+  await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "InventoryMovement_createdAt_idx" ON "InventoryMovement" ("createdAt")');
+}
+
+function mapRawInventoryMovement(row: RawInventoryMovementRow): InventoryMovement {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    sku: row.sku,
+    productName: row.product_name,
+    salesOrderId: row.sales_order_id,
+    type: row.type,
+    quantity: row.quantity,
+    previousAvailableStock: row.previous_available_stock,
+    nextAvailableStock: row.next_available_stock,
+    previousReservedStock: row.previous_reserved_stock,
+    nextReservedStock: row.next_reserved_stock,
+    reason: row.reason,
+    createdAt: row.created_at.toISOString()
+  };
+}
+
+async function fetchInventoryMovementsRaw(input: ListInventoryMovementsInput = {}) {
+  await ensureInventorySchema();
+  const range = resolveDateRange(input.dateRange ?? "all_time");
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (input.productId) {
+    params.push(input.productId);
+    conditions.push(`im."productId" = $${params.length}`);
+  }
+  if (input.salesOrderId) {
+    params.push(input.salesOrderId);
+    conditions.push(`im."salesOrderId" = $${params.length}`);
+  }
+  if (input.type) {
+    params.push(input.type);
+    conditions.push(`im.type = $${params.length}`);
+  }
+  if (range) {
+    params.push(range.start);
+    conditions.push(`im."createdAt" >= $${params.length}`);
+    params.push(range.end);
+    conditions.push(`im."createdAt" < $${params.length}`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = await prisma.$queryRawUnsafe<RawInventoryMovementRow[]>(
+    `
+      SELECT
+        im.id,
+        im."productId" AS product_id,
+        p.sku,
+        p.name AS product_name,
+        im."salesOrderId" AS sales_order_id,
+        im.type,
+        im.quantity,
+        im."previousAvailableStock" AS previous_available_stock,
+        im."nextAvailableStock" AS next_available_stock,
+        im."previousReservedStock" AS previous_reserved_stock,
+        im."nextReservedStock" AS next_reserved_stock,
+        im.reason,
+        im."createdAt" AS created_at
+      FROM "InventoryMovement" im
+      JOIN "Product" p ON p.id = im."productId"
+      ${where}
+      ORDER BY im."createdAt" DESC
+      LIMIT 500
+    `,
+    ...params
+  );
+  return rows.map(mapRawInventoryMovement).slice(0, input.take ?? 25);
+}
+
+async function applyInventoryMovement(input: {
+  productId: string;
+  salesOrderId?: string | null;
+  type: InventoryMovement["type"];
+  quantity: number;
+  nextAvailableStock: (current: DbProduct & { reservedStock: number }) => number;
+  nextReservedStock: (current: DbProduct & { reservedStock: number }) => number;
+  reason?: string | null;
+}) {
+  await ensureSeeded();
+  await ensureInventorySchema();
+  const movementId = `im_${randomToken()}_${Date.now()}`;
+  await prisma.$transaction(async (tx: PrismaTransaction) => {
+    const rows = await tx.$queryRawUnsafe<Array<DbProduct & { reservedStock: number }>>(
+      'SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" WHERE id = $1 FOR UPDATE',
+      input.productId
+    );
+    const product = rows[0];
+    if (!product) {
+      throw new Error(`Product ${input.productId} not found.`);
+    }
+    const previousAvailableStock = product.availableStock;
+    const previousReservedStock = product.reservedStock ?? 0;
+    const nextAvailableStock = input.nextAvailableStock(product);
+    const nextReservedStock = input.nextReservedStock(product);
+    if (nextAvailableStock < 0 || nextReservedStock < 0) {
+      throw new Error(`Insufficient stock for ${product.sku}.`);
+    }
+    await tx.$executeRawUnsafe(
+      'UPDATE "Product" SET "availableStock" = $2, "reservedStock" = $3 WHERE id = $1',
+      input.productId,
+      nextAvailableStock,
+      nextReservedStock
+    );
+    await tx.$executeRawUnsafe(
+      `
+        INSERT INTO "InventoryMovement" (
+          id,
+          "productId",
+          "salesOrderId",
+          type,
+          quantity,
+          "previousAvailableStock",
+          "nextAvailableStock",
+          "previousReservedStock",
+          "nextReservedStock",
+          reason
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `,
+      movementId,
+      input.productId,
+      input.salesOrderId ?? null,
+      input.type,
+      input.quantity,
+      previousAvailableStock,
+      nextAvailableStock,
+      previousReservedStock,
+      nextReservedStock,
+      input.reason ?? null
+    );
+  });
+  const [movement] = await fetchInventoryMovementsRaw({ take: 1 });
+  if (!movement || movement.id !== movementId) {
+    const [created] = await prisma.$queryRawUnsafe<RawInventoryMovementRow[]>(
+      `
+        SELECT
+          im.id,
+          im."productId" AS product_id,
+          p.sku,
+          p.name AS product_name,
+          im."salesOrderId" AS sales_order_id,
+          im.type,
+          im.quantity,
+          im."previousAvailableStock" AS previous_available_stock,
+          im."nextAvailableStock" AS next_available_stock,
+          im."previousReservedStock" AS previous_reserved_stock,
+          im."nextReservedStock" AS next_reserved_stock,
+          im.reason,
+          im."createdAt" AS created_at
+        FROM "InventoryMovement" im
+        JOIN "Product" p ON p.id = im."productId"
+        WHERE im.id = $1
+      `,
+      movementId
+    );
+    if (!created) {
+      throw new Error(`Inventory movement ${movementId} not found after creation.`);
+    }
+    return mapRawInventoryMovement(created);
+  }
+  return movement;
 }
 
 function mapRawConceptInvoice(row: RawConceptInvoiceRow): ConceptInvoice {
@@ -640,7 +853,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   async listProducts(input: SearchCatalogInput = {}) {
     await ensureSeeded();
     await ensureProductSchema();
-    const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", status FROM "Product" ORDER BY name ASC');
+    const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" ORDER BY name ASC');
     const matches = filterByCatalogSearch(products, input);
     await audit("list_products", "Listed products", { resultCount: matches.length });
     return matches.map(mapProduct);
@@ -715,7 +928,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }) {
     await ensureSeeded();
     await ensureProductSchema();
-    const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", status FROM "Product"');
+    const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product"');
     const current = products.find((product) => product.id === input.productId);
     if (!current) {
       throw new Error(`Product ${input.productId} not found.`);
@@ -739,7 +952,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
       input.status ?? current.status ?? "active"
     );
     const product = (await prisma.$queryRawUnsafe<DbProduct[]>(
-      'SELECT id, sku, name, "unitPriceCents", "availableStock", status FROM "Product" WHERE id = $1',
+      'SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" WHERE id = $1',
       input.productId
     ))[0];
     if (!product) {
@@ -798,23 +1011,163 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
 
   async listLowStockProducts(input: { threshold?: number } = {}) {
     await ensureSeeded();
+    await ensureProductSchema();
     const threshold = input.threshold ?? 10;
-    const products = (await prisma.product.findMany({
-      where: {
-        availableStock: {
-          lte: threshold
-        }
-      },
-      orderBy: [
-        { availableStock: "asc" },
-        { name: "asc" }
-      ]
-    })) as DbProduct[];
+    const products = await prisma.$queryRawUnsafe<DbProduct[]>(
+      'SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" WHERE "availableStock" <= $1 ORDER BY "availableStock" ASC, name ASC',
+      threshold
+    );
     await audit("list_low_stock_products", `Listed products with stock at or below ${threshold}`, {
       threshold,
       count: products.length
     });
     return products.map(mapProduct);
+  }
+
+  async createInventoryEntry(input: { productId: string; quantity: number; reason?: string | null }) {
+    const movement = await applyInventoryMovement({
+      productId: input.productId,
+      type: "entry",
+      quantity: input.quantity,
+      reason: input.reason ?? "Entrada de estoque",
+      nextAvailableStock: (product) => product.availableStock + input.quantity,
+      nextReservedStock: (product) => product.reservedStock ?? 0
+    });
+    await audit("inventory_entry", `Stock entry for ${movement.sku}`, { productId: input.productId, quantity: input.quantity });
+    return movement;
+  }
+
+  async createInventoryExit(input: { productId: string; quantity: number; reason?: string | null }) {
+    const movement = await applyInventoryMovement({
+      productId: input.productId,
+      type: "exit",
+      quantity: input.quantity,
+      reason: input.reason ?? "Saida de estoque",
+      nextAvailableStock: (product) => product.availableStock - input.quantity,
+      nextReservedStock: (product) => product.reservedStock ?? 0
+    });
+    await audit("inventory_exit", `Stock exit for ${movement.sku}`, { productId: input.productId, quantity: input.quantity });
+    return movement;
+  }
+
+  async adjustInventory(input: { productId: string; quantity: number; reason?: string | null }) {
+    const movement = await applyInventoryMovement({
+      productId: input.productId,
+      type: "adjustment",
+      quantity: input.quantity,
+      reason: input.reason ?? "Ajuste manual de estoque",
+      nextAvailableStock: () => input.quantity,
+      nextReservedStock: (product) => product.reservedStock ?? 0
+    });
+    await audit("inventory_adjustment", `Manual stock adjustment for ${movement.sku}`, {
+      productId: input.productId,
+      quantity: input.quantity
+    });
+    return movement;
+  }
+
+  async reserveInventory(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }) {
+    const movement = await applyInventoryMovement({
+      productId: input.productId,
+      salesOrderId: input.salesOrderId ?? null,
+      type: "reservation",
+      quantity: input.quantity,
+      reason: input.reason ?? "Reserva de estoque",
+      nextAvailableStock: (product) => product.availableStock - input.quantity,
+      nextReservedStock: (product) => (product.reservedStock ?? 0) + input.quantity
+    });
+    await audit("inventory_reservation", `Reserved stock for ${movement.sku}`, {
+      productId: input.productId,
+      salesOrderId: input.salesOrderId ?? null,
+      quantity: input.quantity
+    });
+    return movement;
+  }
+
+  async releaseInventoryReservation(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }) {
+    const movement = await applyInventoryMovement({
+      productId: input.productId,
+      salesOrderId: input.salesOrderId ?? null,
+      type: "reservation_release",
+      quantity: input.quantity,
+      reason: input.reason ?? "Liberacao de reserva",
+      nextAvailableStock: (product) => product.availableStock + input.quantity,
+      nextReservedStock: (product) => (product.reservedStock ?? 0) - input.quantity
+    });
+    await audit("inventory_reservation_release", `Released stock reservation for ${movement.sku}`, {
+      productId: input.productId,
+      salesOrderId: input.salesOrderId ?? null,
+      quantity: input.quantity
+    });
+    return movement;
+  }
+
+  async writeOffInventoryForSalesOrder(input: { salesOrderId: string; reason?: string | null }) {
+    await ensureSeeded();
+    await ensureInventorySchema();
+    const order = await this.getSalesOrder({ salesOrderId: input.salesOrderId });
+    if (!order) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    const movements: InventoryMovement[] = [];
+    for (const line of order.lines) {
+      const productRows = await prisma.$queryRawUnsafe<Array<DbProduct & { reservedStock: number }>>(
+        'SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" WHERE id = $1',
+        line.productId
+      );
+      const product = productRows[0];
+      const reserved = product?.reservedStock ?? 0;
+      const reservedToConsume = Math.min(reserved, line.quantity);
+      if (reservedToConsume > 0) {
+        movements.push(await applyInventoryMovement({
+          productId: line.productId,
+          salesOrderId: order.id,
+          type: "order_writeoff",
+          quantity: reservedToConsume,
+          reason: input.reason ?? `Baixa por pedido ${order.id}`,
+          nextAvailableStock: (current) => current.availableStock,
+          nextReservedStock: (current) => (current.reservedStock ?? 0) - reservedToConsume
+        }));
+      }
+      const remaining = line.quantity - reservedToConsume;
+      if (remaining > 0) {
+        movements.push(await applyInventoryMovement({
+          productId: line.productId,
+          salesOrderId: order.id,
+          type: "order_writeoff",
+          quantity: remaining,
+          reason: input.reason ?? `Baixa por pedido ${order.id}`,
+          nextAvailableStock: (current) => current.availableStock - remaining,
+          nextReservedStock: (current) => current.reservedStock ?? 0
+        }));
+      }
+    }
+    await audit("inventory_order_writeoff", `Wrote off stock for sales order ${order.id}`, {
+      salesOrderId: order.id,
+      movementCount: movements.length
+    });
+    return movements;
+  }
+
+  async listInventoryMovements(input: ListInventoryMovementsInput = {}) {
+    const movements = await fetchInventoryMovementsRaw(input);
+    await audit("list_inventory_movements", "Listed inventory movements", {
+      productId: input.productId ?? null,
+      salesOrderId: input.salesOrderId ?? null,
+      type: input.type ?? null,
+      resultCount: movements.length
+    });
+    return movements;
   }
 
   async prepareSalesOrder(input: {

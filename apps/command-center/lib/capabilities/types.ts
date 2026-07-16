@@ -5,7 +5,9 @@ import type {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  InventoryMovement,
   ListConceptInvoicesInput,
+  ListInventoryMovementsInput,
   ListSalesOrdersInput,
   Product,
   SalesOrder,
@@ -51,6 +53,23 @@ export interface CapabilityGateway {
     valid: boolean;
   }>;
   listLowStockProducts(input?: { threshold?: number }): Promise<Product[]>;
+  createInventoryEntry(input: { productId: string; quantity: number; reason?: string | null }): Promise<InventoryMovement>;
+  createInventoryExit(input: { productId: string; quantity: number; reason?: string | null }): Promise<InventoryMovement>;
+  adjustInventory(input: { productId: string; quantity: number; reason?: string | null }): Promise<InventoryMovement>;
+  reserveInventory(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }): Promise<InventoryMovement>;
+  releaseInventoryReservation(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }): Promise<InventoryMovement>;
+  writeOffInventoryForSalesOrder(input: { salesOrderId: string; reason?: string | null }): Promise<InventoryMovement[]>;
+  listInventoryMovements(input?: ListInventoryMovementsInput): Promise<InventoryMovement[]>;
   prepareSalesOrder(input: {
     customerId: string;
     lines: Array<{ productId: string; quantity: number }>;

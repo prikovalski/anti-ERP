@@ -1,8 +1,11 @@
 import {
   AnalyticsResult,
   ConceptInvoice,
+  InventoryMovement,
   ListConceptInvoicesInput,
+  ListInventoryMovementsInput,
   ListSalesOrdersInput,
+  Product,
   SearchCatalogInput,
   SalesOrder,
   SalesOrderPreview,
@@ -14,6 +17,7 @@ import type { CapabilityGateway } from "./types";
 
 const salesOrders = new Map<string, SalesOrder>();
 const invoices = new Map<string, ConceptInvoice>();
+const inventoryMovements: InventoryMovement[] = [];
 const suppliers = new Map<string, Supplier>();
 let nextSalesOrderNumber = 1001;
 let nextConceptInvoiceNumber = 5001;
@@ -28,6 +32,10 @@ function createSalesOrderId() {
 
 function createConceptInvoiceId() {
   return `CI-${nextConceptInvoiceNumber++}`;
+}
+
+function createInventoryMovementId() {
+  return `IM-${Date.now()}-${randomToken().toUpperCase()}`;
 }
 
 function normalize(value: string) {
@@ -75,9 +83,46 @@ function filterCatalogRecords<T extends { name: string; status?: string; sku?: s
     .slice(0, input.take ?? 25);
 }
 
+function recordInventoryMovement(input: {
+  product: Product;
+  salesOrderId?: string | null;
+  type: InventoryMovement["type"];
+  quantity: number;
+  previousAvailableStock: number;
+  previousReservedStock: number;
+  reason?: string | null;
+}): InventoryMovement {
+  const movement: InventoryMovement = {
+    id: createInventoryMovementId(),
+    productId: input.product.id,
+    sku: input.product.sku,
+    productName: input.product.name,
+    salesOrderId: input.salesOrderId ?? null,
+    type: input.type,
+    quantity: input.quantity,
+    previousAvailableStock: input.previousAvailableStock,
+    nextAvailableStock: input.product.availableStock,
+    previousReservedStock: input.previousReservedStock,
+    nextReservedStock: input.product.reservedStock ?? 0,
+    reason: input.reason ?? null,
+    createdAt: now()
+  };
+  inventoryMovements.unshift(movement);
+  return movement;
+}
+
 export class DemoCapabilityGateway implements CapabilityGateway {
   private customers = [...demoCustomers];
   private products = [...demoProducts];
+
+  private requireProduct(productId: string) {
+    const product = this.products.find((candidate) => candidate.id === productId);
+    if (!product) {
+      throw new Error(`Product ${productId} not found.`);
+    }
+    product.reservedStock ??= 0;
+    return product;
+  }
 
   async createCustomer(input: { name: string }) {
     const name = cleanName(input.name);
@@ -145,6 +190,7 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       name,
       unitPrice: 0,
       availableStock: 0,
+      reservedStock: 0,
       status: "active" as const
     };
     this.products.push(product);
@@ -268,6 +314,145 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return this.products
       .filter((product) => product.availableStock <= threshold)
       .sort((a, b) => a.availableStock - b.availableStock || a.name.localeCompare(b.name));
+  }
+
+  async createInventoryEntry(input: { productId: string; quantity: number; reason?: string | null }) {
+    const product = this.requireProduct(input.productId);
+    const previousAvailableStock = product.availableStock;
+    const previousReservedStock = product.reservedStock ?? 0;
+    product.availableStock += input.quantity;
+    return recordInventoryMovement({
+      product,
+      type: "entry",
+      quantity: input.quantity,
+      previousAvailableStock,
+      previousReservedStock,
+      reason: input.reason ?? "Entrada de estoque"
+    });
+  }
+
+  async createInventoryExit(input: { productId: string; quantity: number; reason?: string | null }) {
+    const product = this.requireProduct(input.productId);
+    const previousAvailableStock = product.availableStock;
+    const previousReservedStock = product.reservedStock ?? 0;
+    if (product.availableStock < input.quantity) {
+      throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+    }
+    product.availableStock -= input.quantity;
+    return recordInventoryMovement({
+      product,
+      type: "exit",
+      quantity: input.quantity,
+      previousAvailableStock,
+      previousReservedStock,
+      reason: input.reason ?? "Saida de estoque"
+    });
+  }
+
+  async adjustInventory(input: { productId: string; quantity: number; reason?: string | null }) {
+    const product = this.requireProduct(input.productId);
+    const previousAvailableStock = product.availableStock;
+    const previousReservedStock = product.reservedStock ?? 0;
+    product.availableStock = input.quantity;
+    return recordInventoryMovement({
+      product,
+      type: "adjustment",
+      quantity: input.quantity,
+      previousAvailableStock,
+      previousReservedStock,
+      reason: input.reason ?? "Ajuste manual de estoque"
+    });
+  }
+
+  async reserveInventory(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }) {
+    const product = this.requireProduct(input.productId);
+    const previousAvailableStock = product.availableStock;
+    const previousReservedStock = product.reservedStock ?? 0;
+    if (product.availableStock < input.quantity) {
+      throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+    }
+    product.availableStock -= input.quantity;
+    product.reservedStock = previousReservedStock + input.quantity;
+    return recordInventoryMovement({
+      product,
+      salesOrderId: input.salesOrderId ?? null,
+      type: "reservation",
+      quantity: input.quantity,
+      previousAvailableStock,
+      previousReservedStock,
+      reason: input.reason ?? "Reserva de estoque"
+    });
+  }
+
+  async releaseInventoryReservation(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }) {
+    const product = this.requireProduct(input.productId);
+    const previousAvailableStock = product.availableStock;
+    const previousReservedStock = product.reservedStock ?? 0;
+    if (previousReservedStock < input.quantity) {
+      throw new Error(`${product.sku} has only ${previousReservedStock} reserved units.`);
+    }
+    product.availableStock += input.quantity;
+    product.reservedStock = previousReservedStock - input.quantity;
+    return recordInventoryMovement({
+      product,
+      salesOrderId: input.salesOrderId ?? null,
+      type: "reservation_release",
+      quantity: input.quantity,
+      previousAvailableStock,
+      previousReservedStock,
+      reason: input.reason ?? "Liberacao de reserva"
+    });
+  }
+
+  async writeOffInventoryForSalesOrder(input: { salesOrderId: string; reason?: string | null }) {
+    const order = salesOrders.get(input.salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    const movements: InventoryMovement[] = [];
+    for (const line of order.lines) {
+      const product = this.requireProduct(line.productId);
+      const previousAvailableStock = product.availableStock;
+      const previousReservedStock = product.reservedStock ?? 0;
+      const reservedToConsume = Math.min(previousReservedStock, line.quantity);
+      product.reservedStock = previousReservedStock - reservedToConsume;
+      const remaining = line.quantity - reservedToConsume;
+      if (remaining > 0) {
+        if (product.availableStock < remaining) {
+          throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+        }
+        product.availableStock -= remaining;
+      }
+      movements.push(recordInventoryMovement({
+        product,
+        salesOrderId: order.id,
+        type: "order_writeoff",
+        quantity: line.quantity,
+        previousAvailableStock,
+        previousReservedStock,
+        reason: input.reason ?? `Baixa por pedido ${order.id}`
+      }));
+    }
+    return movements;
+  }
+
+  async listInventoryMovements(input: ListInventoryMovementsInput = {}) {
+    return inventoryMovements
+      .filter((movement) => !input.productId || movement.productId === input.productId)
+      .filter((movement) => !input.salesOrderId || movement.salesOrderId === input.salesOrderId)
+      .filter((movement) => !input.type || movement.type === input.type)
+      .filter((movement) => isInsideDateRange(movement.createdAt, input.dateRange ?? "all_time"))
+      .slice(0, input.take ?? 25);
   }
 
   async prepareSalesOrder(input: {

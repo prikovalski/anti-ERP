@@ -14,7 +14,33 @@ export const ProductSchema = z.object({
   name: z.string(),
   unitPrice: z.number().nonnegative(),
   availableStock: z.number().int().nonnegative(),
+  reservedStock: z.number().int().nonnegative().default(0),
   status: z.enum(["active", "inactive"]).default("active")
+});
+
+export const InventoryMovementTypeSchema = z.enum([
+  "entry",
+  "exit",
+  "adjustment",
+  "reservation",
+  "reservation_release",
+  "order_writeoff"
+]);
+
+export const InventoryMovementSchema = z.object({
+  id: z.string(),
+  productId: z.string(),
+  sku: z.string(),
+  productName: z.string(),
+  salesOrderId: z.string().nullable(),
+  type: InventoryMovementTypeSchema,
+  quantity: z.number().int(),
+  previousAvailableStock: z.number().int().nonnegative(),
+  nextAvailableStock: z.number().int().nonnegative(),
+  previousReservedStock: z.number().int().nonnegative(),
+  nextReservedStock: z.number().int().nonnegative(),
+  reason: z.string().nullable(),
+  createdAt: z.string()
 });
 
 export const SupplierSchema = z.object({
@@ -136,6 +162,38 @@ export const ValidateStockInputSchema = z.object({
 
 export const ListLowStockProductsInputSchema = z.object({
   threshold: z.number().int().nonnegative().default(10)
+});
+
+export const InventoryQuantityInputSchema = z.object({
+  productId: z.string(),
+  quantity: z.number().int().positive(),
+  reason: z.string().trim().min(1).nullable().optional()
+});
+
+export const AdjustInventoryInputSchema = z.object({
+  productId: z.string(),
+  quantity: z.number().int().nonnegative(),
+  reason: z.string().trim().min(1).nullable().optional()
+});
+
+export const ReserveInventoryInputSchema = z.object({
+  productId: z.string(),
+  quantity: z.number().int().positive(),
+  salesOrderId: z.string().nullable().optional(),
+  reason: z.string().trim().min(1).nullable().optional()
+});
+
+export const WriteOffInventoryForSalesOrderInputSchema = z.object({
+  salesOrderId: z.string(),
+  reason: z.string().trim().min(1).nullable().optional()
+});
+
+export const ListInventoryMovementsInputSchema = z.object({
+  productId: z.string().nullable().optional(),
+  salesOrderId: z.string().nullable().optional(),
+  type: InventoryMovementTypeSchema.nullable().optional(),
+  dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+  take: z.number().int().positive().max(100).nullable().optional()
 });
 
 export const PrepareSalesOrderInputSchema = z.object({
@@ -384,6 +442,7 @@ export const demoProducts: Product[] = [
     name: "Notebook Air 14",
     unitPrice: 6200,
     availableStock: 37,
+    reservedStock: 0,
     status: "active"
   },
   {
@@ -392,6 +451,7 @@ export const demoProducts: Product[] = [
     name: "Monitor 27 4K",
     unitPrice: 1950,
     availableStock: 18,
+    reservedStock: 0,
     status: "active"
   },
   {
@@ -400,12 +460,15 @@ export const demoProducts: Product[] = [
     name: "Teclado Pro ABNT2",
     unitPrice: 480,
     availableStock: 52,
+    reservedStock: 0,
     status: "active"
   }
 ];
 
 export type Customer = z.infer<typeof CustomerSchema>;
 export type Product = z.infer<typeof ProductSchema>;
+export type InventoryMovementType = z.infer<typeof InventoryMovementTypeSchema>;
+export type InventoryMovement = z.infer<typeof InventoryMovementSchema>;
 export type Supplier = z.infer<typeof SupplierSchema>;
 export type CreateCustomerInput = z.infer<typeof CreateCustomerInputSchema>;
 export type CreateProductInput = z.infer<typeof CreateProductInputSchema>;
@@ -415,6 +478,11 @@ export type UpdateCustomerInput = z.infer<typeof UpdateCustomerInputSchema>;
 export type UpdateSupplierInput = z.infer<typeof UpdateSupplierInputSchema>;
 export type SearchCatalogInput = z.infer<typeof SearchCatalogInputSchema>;
 export type ListLowStockProductsInput = z.infer<typeof ListLowStockProductsInputSchema>;
+export type InventoryQuantityInput = z.infer<typeof InventoryQuantityInputSchema>;
+export type AdjustInventoryInput = z.infer<typeof AdjustInventoryInputSchema>;
+export type ReserveInventoryInput = z.infer<typeof ReserveInventoryInputSchema>;
+export type WriteOffInventoryForSalesOrderInput = z.infer<typeof WriteOffInventoryForSalesOrderInputSchema>;
+export type ListInventoryMovementsInput = z.infer<typeof ListInventoryMovementsInputSchema>;
 export type AddSalesOrderLineInput = z.infer<typeof AddSalesOrderLineInputSchema>;
 export type SetSalesOrderLineQuantityInput = z.infer<typeof SetSalesOrderLineQuantityInputSchema>;
 export type RemoveSalesOrderLineInput = z.infer<typeof RemoveSalesOrderLineInputSchema>;

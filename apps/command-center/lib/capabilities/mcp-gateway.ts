@@ -1,7 +1,9 @@
 import {
   ConceptInvoiceSchema,
   CustomerSchema,
+  InventoryMovementSchema,
   ListConceptInvoicesInputSchema,
+  ListInventoryMovementsInputSchema,
   ProductSchema,
   SearchCatalogInputSchema,
   SupplierSchema,
@@ -41,7 +43,14 @@ const productTools = new Set([
   "list_products",
   "update_product",
   "validate_stock",
-  "list_low_stock_products"
+  "list_low_stock_products",
+  "inventory_entry",
+  "inventory_exit",
+  "inventory_adjustment",
+  "inventory_reservation",
+  "inventory_reservation_release",
+  "inventory_order_writeoff",
+  "list_inventory_movements"
 ]);
 const supplierTools = new Set(["create_supplier", "update_supplier", "search_supplier", "list_suppliers"]);
 const salesOrderTools = new Set([
@@ -355,6 +364,44 @@ export class McpCapabilityGateway implements CapabilityGateway {
 
   async listLowStockProducts(input: { threshold?: number } = {}) {
     return callTool("list_low_stock_products", input, z.array(ProductSchema));
+  }
+
+  async createInventoryEntry(input: { productId: string; quantity: number; reason?: string | null }) {
+    return callTool("inventory_entry", input, InventoryMovementSchema);
+  }
+
+  async createInventoryExit(input: { productId: string; quantity: number; reason?: string | null }) {
+    return callTool("inventory_exit", input, InventoryMovementSchema);
+  }
+
+  async adjustInventory(input: { productId: string; quantity: number; reason?: string | null }) {
+    return callTool("inventory_adjustment", input, InventoryMovementSchema);
+  }
+
+  async reserveInventory(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }) {
+    return callTool("inventory_reservation", input, InventoryMovementSchema);
+  }
+
+  async releaseInventoryReservation(input: {
+    productId: string;
+    quantity: number;
+    salesOrderId?: string | null;
+    reason?: string | null;
+  }) {
+    return callTool("inventory_reservation_release", input, InventoryMovementSchema);
+  }
+
+  async writeOffInventoryForSalesOrder(input: { salesOrderId: string; reason?: string | null }) {
+    return callTool("inventory_order_writeoff", input, z.array(InventoryMovementSchema));
+  }
+
+  async listInventoryMovements(input: z.infer<typeof ListInventoryMovementsInputSchema> = {}) {
+    return callTool("list_inventory_movements", input, z.array(InventoryMovementSchema));
   }
 
   async prepareSalesOrder(input: {

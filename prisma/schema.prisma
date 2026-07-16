@@ -24,10 +24,31 @@ model Product {
   name           String
   unitPriceCents Int
   availableStock Int
+  reservedStock  Int              @default(0)
   status         String           @default("active")
   salesOrderLines SalesOrderLine[]
+  inventoryMovements InventoryMovement[]
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
+}
+
+model InventoryMovement {
+  id                     String   @id @default(cuid())
+  productId              String
+  product                Product  @relation(fields: [productId], references: [id])
+  salesOrderId           String?
+  type                   String
+  quantity               Int
+  previousAvailableStock Int
+  nextAvailableStock     Int
+  previousReservedStock  Int
+  nextReservedStock      Int
+  reason                 String?
+  createdAt              DateTime @default(now())
+
+  @@index([productId])
+  @@index([salesOrderId])
+  @@index([createdAt])
 }
 
 model Supplier {

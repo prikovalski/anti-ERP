@@ -846,6 +846,9 @@ function inferDocumentTitle(response: AgentResponse) {
   if (firstAuditAction.includes("list_low_stock") || text.includes("estoque baixo")) {
     return "Diagnostico de estoque";
   }
+  if (firstAuditAction.includes("list_inventory_movements") || text.includes("historico de estoque")) {
+    return "Historico de estoque";
+  }
   if (firstAuditAction.includes("create_customer") || text.includes("cliente")) {
     return "Cadastro de cliente";
   }
@@ -890,8 +893,17 @@ function parseResultTable(document: DocumentMessage): ResultTable | null {
   if (document.title === "Cadastro de cliente" && document.text.toLowerCase().includes("cliente(s):")) {
     return parseCustomerList(document.text);
   }
+  if (document.title === "Cadastro de produto" && document.text.toLowerCase().includes("produto(s):")) {
+    return parseProductList(document.text);
+  }
+  if (document.title === "Diagnostico de estoque") {
+    return parseLowStockProductList(document.text);
+  }
   if (document.title === "Lista de notas fiscais") {
     return parseInvoiceList(document.text);
+  }
+  if (document.title === "Historico de estoque") {
+    return parseInventoryMovementList(document.text);
   }
   return null;
 }
@@ -945,6 +957,60 @@ function parseCustomerList(text: string): ResultTable | null {
   };
 }
 
+function parseProductList(text: string): ResultTable | null {
+  const items = extractSemicolonItems(text);
+  const rows = items
+    .map((item) => {
+      const match = item.match(/^(.+?)\s+\((.+?)\)$/i);
+      if (!match) {
+        return null;
+      }
+      const details = (match[2] ?? "").split(",").map((part) => part.trim());
+      const sku = details[0] ?? "-";
+      const status = details.find((part) => /^(ativo|inativo)$/i.test(part)) ?? "-";
+      const available = details.find((part) => /^disponivel\s+/i.test(part))?.replace(/^disponivel\s+/i, "") ?? "-";
+      const reserved = details.find((part) => /^reservado\s+/i.test(part))?.replace(/^reservado\s+/i, "") ?? "-";
+      const price = details.find((part) => /^preco\s+/i.test(part))?.replace(/^preco\s+/i, "") ?? "-";
+      return [match[1] ?? "-", sku, status, available, reserved, price];
+    })
+    .filter((row): row is string[] => Boolean(row));
+
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    title: "Produtos",
+    columns: ["Produto", "SKU", "Status", "Disponivel", "Reservado", "Preco"],
+    rows
+  };
+}
+
+function parseLowStockProductList(text: string): ResultTable | null {
+  const items = extractSemicolonItems(text);
+  const rows = items
+    .map((item) => {
+      const match = item.match(/^(.+?)\s+\((.+?)\)$/i);
+      if (!match) {
+        return null;
+      }
+      const details = (match[2] ?? "").split(",").map((part) => part.trim());
+      const sku = details[0] ?? "-";
+      const available = details.find((part) => /^disponivel\s+/i.test(part))?.replace(/^disponivel\s+/i, "") ?? "-";
+      const reserved = details.find((part) => /^reservado\s+/i.test(part))?.replace(/^reservado\s+/i, "") ?? "-";
+      return [match[1] ?? "-", sku, available, reserved];
+    })
+    .filter((row): row is string[] => Boolean(row));
+
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    title: "Produtos com estoque baixo",
+    columns: ["Produto", "SKU", "Disponivel", "Reservado"],
+    rows
+  };
+}
+
 function parseInvoiceList(text: string): ResultTable | null {
   const items = extractSemicolonItems(text);
   const rows = items
@@ -971,6 +1037,28 @@ function parseInvoiceList(text: string): ResultTable | null {
   };
 }
 
+function parseInventoryMovementList(text: string): ResultTable | null {
+  const items = extractSemicolonItems(text);
+  const rows = items
+    .map((item) => {
+      const parts = item.split("|").map((part) => part.trim());
+      if (parts.length < 8) {
+        return null;
+      }
+      return [parts[0] ?? "-", parts[1] ?? "-", parts[2] ?? "-", parts[3]?.replace(/^qtd\s+/i, "") ?? "-", parts[4]?.replace(/^disponivel\s+/i, "") ?? "-", parts[5]?.replace(/^reservado\s+/i, "") ?? "-", parts[6] ?? "-", parts[7] ?? "-"];
+    })
+    .filter((row): row is string[] => Boolean(row));
+
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    title: "Movimentacoes de estoque",
+    columns: ["Data", "Produto", "Tipo", "Qtd", "Disponivel", "Reservado", "Pedido", "Motivo"],
+    rows
+  };
+}
+
 function extractSemicolonItems(text: string) {
   const listSegment = text.includes(":") ? text.slice(text.indexOf(":") + 1) : "";
   return listSegment
@@ -981,11 +1069,17 @@ function extractSemicolonItems(text: string) {
 }
 
 function buildResultTableColumns(count: number) {
+  if (count === 8) {
+    return "150px minmax(180px, 1fr) 150px 80px 140px 140px 110px minmax(220px, 1fr)";
+  }
   if (count === 5) {
     return "130px minmax(220px, 1fr) 130px 120px 150px";
   }
   if (count === 6) {
     return "120px 120px minmax(220px, 1fr) 130px 150px 210px";
+  }
+  if (count === 4) {
+    return "minmax(220px, 1fr) minmax(180px, 1fr) 120px 120px";
   }
   if (count === 3) {
     return "minmax(240px, 1fr) 180px 130px";
