@@ -564,25 +564,61 @@ function ResultTableView({
         ))}
         {actionType ? <span role="columnheader">Acao</span> : null}
       </div>
-      {table.rows.map((row, rowIndex) => (
-        <div
-          key={`${table.title}-${rowIndex}-${row[0] ?? "row"}`}
-          className="result-table-row"
-          role="row"
-          style={{ gridTemplateColumns }}
-        >
-          {row.map((cell, cellIndex) => (
-            <span key={`${rowIndex}-${cellIndex}`} role="cell" title={cell}>{cell}</span>
-          ))}
-          {actionType ? (
-            <span className="result-table-action-cell" role="cell">
-              <button type="button" onClick={() => onOpenDocumentDetail(actionType, row[0] ?? "")}>
-                Ver
-              </button>
-            </span>
-          ) : null}
-        </div>
-      ))}
+      {table.rows.map((row, rowIndex) => {
+        const documentId = row[0] ?? "";
+        const openDetail = () => {
+          if (actionType && documentId) {
+            onOpenDocumentDetail(actionType, documentId);
+          }
+        };
+
+        return (
+          <div
+            key={`${table.title}-${rowIndex}-${documentId || "row"}`}
+            className={`result-table-row ${actionType ? "clickable" : ""}`}
+            role="row"
+            style={{
+              gridTemplateColumns,
+              cursor: actionType ? "pointer" : undefined
+            }}
+            tabIndex={actionType ? 0 : undefined}
+            onClick={actionType ? openDetail : undefined}
+            onKeyDown={(event) => {
+              if (!actionType) {
+                return;
+              }
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                openDetail();
+              }
+            }}
+          >
+            {row.map((cell, cellIndex) => (
+              <span
+                key={`${rowIndex}-${cellIndex}`}
+                role="cell"
+                style={{ cursor: actionType ? "pointer" : undefined }}
+                title={cell}
+              >
+                {cell}
+              </span>
+            ))}
+            {actionType ? (
+              <span className="result-table-action-cell" role="cell" style={{ cursor: "pointer" }}>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openDetail();
+                  }}
+                >
+                  Ver
+                </button>
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1081,11 +1117,11 @@ function inferDocumentTitle(response: AgentResponse) {
   if (firstAuditAction.includes("list_inventory_movements") || text.includes("historico de estoque")) {
     return "Historico de estoque";
   }
+  if (firstAuditAction.includes("list_concept_invoices") || mentionsInvoice(text)) {
+    return "Lista de notas fiscais";
+  }
   if (firstAuditAction.includes("list_sales_orders") || firstAuditAction.includes("list_recent_orders") || text.includes("pedido")) {
     return "Lista de pedidos";
-  }
-  if (firstAuditAction.includes("list_concept_invoices") || text.includes("nota(s) fiscal")) {
-    return "Lista de notas fiscais";
   }
   if (firstAuditAction.includes("create_customer") || text.includes("cliente")) {
     return "Cadastro de cliente";
@@ -1097,6 +1133,13 @@ function inferDocumentTitle(response: AgentResponse) {
     return "Cadastro de fornecedor";
   }
   return "Resultado da solicitacao";
+}
+
+function mentionsInvoice(text: string) {
+  return /\b(nota|notas|nf|nfs)\b/.test(text)
+    || text.includes("nota(s) fiscal")
+    || text.includes("nota fiscal")
+    || text.includes("nota(s) fiscal(is)");
 }
 
 function getResultSummary(text: string) {
