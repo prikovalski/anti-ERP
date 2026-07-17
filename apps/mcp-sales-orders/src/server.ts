@@ -97,6 +97,17 @@ server.tool(
   async (input) => json(await gateway.removeSalesOrderLine(input))
 );
 
+server.tool(
+  "apply_sales_order_discount",
+  {
+    salesOrderId: z.string(),
+    productId: z.string().nullable().optional(),
+    discountType: z.enum(["percent", "amount"]),
+    value: z.number().positive()
+  },
+  async (input) => json(await gateway.applySalesOrderDiscount(input))
+);
+
 server.tool("cancel_sales_order", { salesOrderId: z.string() }, async (input) =>
   json(await gateway.cancelSalesOrder(input))
 );

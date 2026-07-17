@@ -61,6 +61,7 @@ const salesOrderTools = new Set([
   "add_sales_order_line",
   "set_sales_order_line_quantity",
   "remove_sales_order_line",
+  "apply_sales_order_discount",
   "cancel_sales_order",
   "duplicate_sales_order",
   "get_sales_order",
@@ -441,6 +442,15 @@ export class McpCapabilityGateway implements CapabilityGateway {
     productId: string;
   }) {
     return callTool("remove_sales_order_line", input, SalesOrderSchema);
+  }
+
+  async applySalesOrderDiscount(input: {
+    salesOrderId: string;
+    productId?: string | null;
+    discountType: "percent" | "amount";
+    value: number;
+  }) {
+    return callTool("apply_sales_order_discount", input, SalesOrderSchema);
   }
 
   async cancelSalesOrder(input: { salesOrderId: string }) {

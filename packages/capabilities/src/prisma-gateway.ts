@@ -1540,6 +1540,90 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return mapSalesOrder(order);
   }
 
+  async applySalesOrderDiscount(input: {
+    salesOrderId: string;
+    productId?: string | null;
+    discountType: "percent" | "amount";
+    value: number;
+  }) {
+    await ensureSeeded();
+    await assertSalesOrderCanChange(input.salesOrderId);
+    const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      const existingOrder = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: input.salesOrderId },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+      if (existingOrder.status === "canceled") {
+        throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
+      }
+
+      const targetLines = input.productId
+        ? existingOrder.lines.filter((line) => line.productId === input.productId)
+        : existingOrder.lines;
+      if (!targetLines.length) {
+        throw new Error(input.productId
+          ? `Product ${input.productId} is not in sales order ${input.salesOrderId}.`
+          : `Sales order ${input.salesOrderId} has no items.`);
+      }
+
+      const currentTotalCents = targetLines.reduce((sum, line) => sum + line.totalCents, 0);
+      const discountCents = input.discountType === "percent"
+        ? Math.round(currentTotalCents * (input.value / 100))
+        : toCents(input.value);
+      if (input.discountType === "percent" && input.value > 100) {
+        throw new Error("Discount percent cannot be greater than 100.");
+      }
+      if (discountCents <= 0) {
+        throw new Error("Discount must be greater than zero.");
+      }
+      if (discountCents > currentTotalCents) {
+        throw new Error("Discount cannot be greater than the selected total.");
+      }
+
+      let distributedDiscountCents = 0;
+      for (let index = 0; index < targetLines.length; index += 1) {
+        const line = targetLines[index]!;
+        const lineDiscountCents = index === targetLines.length - 1
+          ? discountCents - distributedDiscountCents
+          : Math.round(discountCents * (line.totalCents / currentTotalCents));
+        distributedDiscountCents += lineDiscountCents;
+        await tx.salesOrderLine.update({
+          where: { id: line.id },
+          data: {
+            totalCents: line.totalCents - lineDiscountCents
+          }
+        });
+      }
+
+      return tx.salesOrder.findUniqueOrThrow({
+        where: { id: existingOrder.id },
+        include: {
+          customer: true,
+          lines: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+    });
+
+    await audit("apply_sales_order_discount", `Applied discount to sales order ${order.id}`, {
+      salesOrderId: order.id,
+      productId: input.productId ?? null,
+      discountType: input.discountType,
+      value: input.value
+    });
+    return mapSalesOrder(order);
+  }
+
   async cancelSalesOrder(input: { salesOrderId: string }) {
     await ensureSeeded();
     await ensureInventorySchema();

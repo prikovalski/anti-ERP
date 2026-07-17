@@ -656,6 +656,55 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     return order;
   }
 
+  async applySalesOrderDiscount(input: {
+    salesOrderId: string;
+    productId?: string | null;
+    discountType: "percent" | "amount";
+    value: number;
+  }) {
+    const order = salesOrders.get(input.salesOrderId);
+    if (!order) {
+      throw new Error(`Sales order ${input.salesOrderId} not found.`);
+    }
+    if (order.status === "canceled") {
+      throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
+    }
+
+    const targetLines = input.productId
+      ? order.lines.filter((line) => line.productId === input.productId)
+      : order.lines;
+    if (!targetLines.length) {
+      throw new Error(input.productId
+        ? `Product ${input.productId} is not in sales order ${input.salesOrderId}.`
+        : `Sales order ${input.salesOrderId} has no items.`);
+    }
+    if (input.discountType === "percent" && input.value > 100) {
+      throw new Error("Discount percent cannot be greater than 100.");
+    }
+
+    const currentTotal = targetLines.reduce((sum, line) => sum + line.total, 0);
+    const discount = input.discountType === "percent" ? currentTotal * (input.value / 100) : input.value;
+    if (discount <= 0) {
+      throw new Error("Discount must be greater than zero.");
+    }
+    if (discount > currentTotal) {
+      throw new Error("Discount cannot be greater than the selected total.");
+    }
+
+    let distributedDiscount = 0;
+    for (let index = 0; index < targetLines.length; index += 1) {
+      const line = targetLines[index]!;
+      const lineDiscount = index === targetLines.length - 1
+        ? discount - distributedDiscount
+        : roundMoney(discount * (line.total / currentTotal));
+      distributedDiscount += lineDiscount;
+      line.total = roundMoney(line.total - lineDiscount);
+    }
+    order.subtotal = roundMoney(order.lines.reduce((sum, line) => sum + line.total, 0));
+    salesOrders.set(order.id, order);
+    return order;
+  }
+
   async cancelSalesOrder(input: { salesOrderId: string }) {
     const order = salesOrders.get(input.salesOrderId);
     if (!order) {

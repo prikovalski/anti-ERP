@@ -94,6 +94,12 @@ export interface CapabilityGateway {
     salesOrderId: string;
     productId: string;
   }): Promise<SalesOrder>;
+  applySalesOrderDiscount(input: {
+    salesOrderId: string;
+    productId?: string | null;
+    discountType: "percent" | "amount";
+    value: number;
+  }): Promise<SalesOrder>;
   cancelSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
   duplicateSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
   createConceptInvoice(input: { salesOrderId: string }): Promise<ConceptInvoice>;

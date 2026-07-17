@@ -18,6 +18,7 @@ import type {
 } from "@anti-erp/shared";
 import { getCapabilityGateway, type CapabilityGateway } from "../capabilities";
 import { recordAgentStep } from "../observability/mcp-trace";
+import { buildClarifyingFallbackQuestion } from "./clarifying-fallback";
 import { createCustomerDisambiguation, createProductDisambiguation } from "./disambiguation";
 import { parseIntentLocally } from "./intent-parser";
 import { inferIntentWithOpenRouter, type AgentIntent } from "./openrouter";
@@ -2041,10 +2042,9 @@ function createUnknownResponse(state: AgentGraphStateValue): AgentResponse {
     message: {
       id: createId("msg"),
       role: "agent",
-      text:
-        "Posso cadastrar clientes, produtos e fornecedores, criar pedidos, adicionar itens ao pedido confirmado, gerar nota conceitual, listar pedidos recentes, diagnosticar estoque baixo ou comparar com um ERP tradicional."
+      text: buildClarifyingFallbackQuestion(state.message)
     },
-    auditEvents: [audit("unknown_intent", "Agent could not map the message to a supported MCP capability.", "agent")],
+    auditEvents: [audit("clarification_required", "Agent asked a follow-up question for an unmapped message.", "agent")],
     lastOrderId: state.lastOrderId ?? null
   };
 }

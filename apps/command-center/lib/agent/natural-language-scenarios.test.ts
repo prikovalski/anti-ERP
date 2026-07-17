@@ -3,6 +3,7 @@ import test from "node:test";
 import { parseIntentLocally } from "./intent-parser";
 import { runDirectAgent } from "./direct-agent";
 import { buildLocalSemanticPlan } from "./semantic-plan";
+import { demoCapabilityGateway } from "../capabilities/demo-gateway";
 
 process.env.CAPABILITY_GATEWAY = "demo";
 process.env.LANGSMITH_TRACING = "false";
@@ -165,4 +166,84 @@ test("direct agent executes natural inventory and managerial report commands wit
   const stockout = await runDirectAgent({ message: "mostre o risco de ruptura de estoque" });
   assert.equal(stockout.managerialReport?.kind, "stockout_risk");
   assert.match(stockout.message.text, /Ruptura de estoque/i);
+});
+
+test("direct agent asks clarifying questions for incomplete informal commands", async () => {
+  const incompleteOrder = await runDirectAgent({ message: "faz um pedido" });
+  const vagueReport = await runDirectAgent({ message: "quero um relatorio" });
+  const vagueStock = await runDirectAgent({ message: "mexer no estoque" });
+
+  assert.match(incompleteOrder.message.text, /cliente|itens|pedido/i);
+  assert.match(vagueReport.message.text, /relatorio|vendas|faturamento|margem/i);
+  assert.match(vagueStock.message.text, /produto|estoque/i);
+  assert.equal(incompleteOrder.auditEvents[0]?.action, "clarification_required");
+});
+
+test("direct agent applies discounts to the whole order or a specific item", async () => {
+  const [customer] = await demoCapabilityGateway.searchCustomer({ query: "Northstar" });
+  const [monitor] = await demoCapabilityGateway.searchProduct({ query: "monitor" });
+  const [notebook] = await demoCapabilityGateway.searchProduct({ query: "notebook" });
+  assert.ok(customer);
+  assert.ok(monitor);
+  assert.ok(notebook);
+
+  const wholeOrderPreview = await demoCapabilityGateway.prepareSalesOrder({
+    customerId: customer.id,
+    lines: [{ productId: monitor.id, quantity: 2 }]
+  });
+  const wholeOrder = await demoCapabilityGateway.createSalesOrder({ preview: wholeOrderPreview, confirmedByUser: true });
+  const wholeOrderSubtotal = wholeOrder.subtotal;
+  const wholeDiscount = await runDirectAgent({
+    message: "aplique 10% de desconto no pedido",
+    lastOrderId: wholeOrder.id
+  });
+
+  assert.equal(wholeDiscount.order?.subtotal, wholeOrderSubtotal * 0.9);
+  assert.match(wholeDiscount.message.text, /desconto de 10% no pedido todo/i);
+
+  const itemPreview = await demoCapabilityGateway.prepareSalesOrder({
+    customerId: customer.id,
+    lines: [
+      { productId: monitor.id, quantity: 1 },
+      { productId: notebook.id, quantity: 1 }
+    ]
+  });
+  const itemOrder = await demoCapabilityGateway.createSalesOrder({ preview: itemPreview, confirmedByUser: true });
+  const originalMonitorTotal = itemOrder.lines.find((line) => line.productId === monitor.id)!.total;
+  const originalNotebookTotal = itemOrder.lines.find((line) => line.productId === notebook.id)!.total;
+  const itemDiscount = await runDirectAgent({
+    message: "de 100 reais de desconto no item monitor do pedido",
+    lastOrderId: itemOrder.id
+  });
+  const discountedMonitor = itemDiscount.order?.lines.find((line) => line.productId === monitor.id);
+  const unchangedNotebook = itemDiscount.order?.lines.find((line) => line.productId === notebook.id);
+
+  assert.equal(discountedMonitor?.total, originalMonitorTotal - 100);
+  assert.equal(unchangedNotebook?.total, originalNotebookTotal);
+});
+
+test("direct agent filters listed orders by customer name after 'pedidos de'", async () => {
+  const suffix = Math.random().toString(36).slice(2, 7);
+  const joao = await demoCapabilityGateway.createCustomer({ name: `Joao Silva ${suffix}` });
+  const [northstar] = await demoCapabilityGateway.searchCustomer({ query: "Northstar" });
+  const [monitor] = await demoCapabilityGateway.searchProduct({ query: "monitor" });
+  assert.ok(northstar);
+  assert.ok(monitor);
+
+  const joaoPreview = await demoCapabilityGateway.prepareSalesOrder({
+    customerId: joao.id,
+    lines: [{ productId: monitor.id, quantity: 1 }]
+  });
+  const northstarPreview = await demoCapabilityGateway.prepareSalesOrder({
+    customerId: northstar.id,
+    lines: [{ productId: monitor.id, quantity: 1 }]
+  });
+  const joaoOrder = await demoCapabilityGateway.createSalesOrder({ preview: joaoPreview, confirmedByUser: true });
+  const northstarOrder = await demoCapabilityGateway.createSalesOrder({ preview: northstarPreview, confirmedByUser: true });
+
+  const response = await runDirectAgent({ message: `liste todos os pedidos de Joao Silva ${suffix}` });
+
+  assert.match(response.message.text, new RegExp(joaoOrder.id));
+  assert.doesNotMatch(response.message.text, new RegExp(northstarOrder.id));
+  assert.match(response.message.text, new RegExp(`cliente Joao Silva ${suffix}`, "i"));
 });

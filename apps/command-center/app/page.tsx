@@ -24,6 +24,12 @@ type ApiErrorResponse = {
   error?: string;
 };
 
+type DocumentDetailResponse = {
+  order?: SalesOrder | null;
+  invoice?: ConceptInvoice | null;
+  message?: string;
+};
+
 type McpTrace = NonNullable<AgentResponse["mcpTrace"]>;
 
 type DocumentMessage = {
@@ -117,6 +123,7 @@ export default function CommandCenterPage() {
   const [managerialReport, setManagerialReport] = useState<ManagerialReport | null>(null);
   const [executionPlan, setExecutionPlan] = useState<ExecutionPlan | null>(null);
   const [documentMessage, setDocumentMessage] = useState<DocumentMessage | null>(null);
+  const [documentListBeforeDetail, setDocumentListBeforeDetail] = useState<DocumentMessage | null>(null);
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [conversationContext, setConversationContext] = useState<ConversationContext>(emptyConversationContext);
   const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("langgraph");
@@ -192,6 +199,7 @@ export default function CommandCenterPage() {
     setManagerialReport(null);
     setExecutionPlan(null);
     setDocumentMessage(null);
+    setDocumentListBeforeDetail(null);
     setMcpTrace([]);
     setInput("");
 
@@ -280,6 +288,46 @@ export default function CommandCenterPage() {
     } finally {
       setPending(false);
     }
+  }
+
+  async function openDocumentDetail(type: "order" | "invoice", id: string) {
+    setPending(true);
+    setDocumentListBeforeDetail(documentMessage);
+    try {
+      const response = await fetch(`/api/document-detail?type=${type}&id=${encodeURIComponent(id)}`);
+      const payload = (await response.json()) as DocumentDetailResponse;
+
+      if (!response.ok) {
+        throw new Error(payload.message ?? "Nao consegui carregar os detalhes.");
+      }
+
+      setOrder(payload.order ?? null);
+      setInvoice(payload.invoice ?? null);
+      setPreview(null);
+      setAnalyticsResult(null);
+      setManagerialReport(null);
+      setExecutionPlan(null);
+      setDocumentMessage(null);
+      setLastOrderId(payload.order?.id ?? payload.invoice?.salesOrderId ?? lastOrderId);
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `document_detail_error_${Date.now()}`,
+          role: "agent",
+          text: error instanceof Error ? error.message : "Nao consegui carregar os detalhes."
+        }
+      ]);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  function backToDocumentList() {
+    setOrder(null);
+    setInvoice(null);
+    setDocumentMessage(documentListBeforeDetail);
+    setDocumentListBeforeDetail(null);
   }
 
   return (
@@ -374,6 +422,8 @@ export default function CommandCenterPage() {
           preview={preview}
           setCreateInvoiceAfterConfirm={setCreateInvoiceAfterConfirm}
           onConfirmPreview={confirmPreview}
+          onOpenDocumentDetail={openDocumentDetail}
+          onBackToList={documentListBeforeDetail ? backToDocumentList : undefined}
         />
       </section>
     </main>
@@ -394,7 +444,9 @@ function DocumentWorkspace({
   pending,
   preview,
   setCreateInvoiceAfterConfirm,
-  onConfirmPreview
+  onBackToList,
+  onConfirmPreview,
+  onOpenDocumentDetail
 }: {
   analyticsResult: AnalyticsResult | null;
   audit: AuditEvent[];
@@ -409,7 +461,9 @@ function DocumentWorkspace({
   pending: boolean;
   preview: SalesOrderPreview | null;
   setCreateInvoiceAfterConfirm: (value: boolean) => void;
+  onBackToList?: () => void;
   onConfirmPreview: () => void;
+  onOpenDocumentDetail: (type: "order" | "invoice", id: string) => void;
 }) {
   const hasDocument = Boolean(preview || order || invoice || analyticsResult || managerialReport || executionPlan || documentMessage);
   const showGenericDocument = Boolean(documentMessage && !preview && !order && !invoice && !analyticsResult && !managerialReport && !executionPlan);
@@ -417,7 +471,9 @@ function DocumentWorkspace({
   return (
     <div className="document-scroll">
       {!hasDocument ? <EmptyDocument /> : null}
-      {showGenericDocument && documentMessage ? <GenericResultDocument document={documentMessage} /> : null}
+      {showGenericDocument && documentMessage ? (
+        <GenericResultDocument document={documentMessage} onOpenDocumentDetail={onOpenDocumentDetail} />
+      ) : null}
       {executionPlan ? <ExecutionPlanDocument plan={executionPlan} /> : null}
       {preview ? (
         <SalesOrderDocument
@@ -428,7 +484,8 @@ function DocumentWorkspace({
           onConfirmPreview={onConfirmPreview}
         />
       ) : null}
-      {order ? <ConfirmedOrderDocument invoice={invoice} order={order} /> : null}
+      {order ? <ConfirmedOrderDocument invoice={invoice} order={order} onBackToList={onBackToList} /> : null}
+      {!order && invoice ? <InvoiceDetailDocument invoice={invoice} onBackToList={onBackToList} /> : null}
       {managerialReport ? <ManagerialReportDocument report={managerialReport} /> : null}
       {analyticsResult ? <ReportDocument result={analyticsResult} /> : null}
       <OperationalFooter audit={audit} conversationContext={conversationContext} trace={mcpTrace} />
@@ -449,7 +506,13 @@ function EmptyDocument() {
   );
 }
 
-function GenericResultDocument({ document }: { document: DocumentMessage }) {
+function GenericResultDocument({
+  document,
+  onOpenDocumentDetail
+}: {
+  document: DocumentMessage;
+  onOpenDocumentDetail: (type: "order" | "invoice", id: string) => void;
+}) {
   const table = parseResultTable(document);
   const items = extractResultItems(document.text);
 
@@ -463,7 +526,7 @@ function GenericResultDocument({ document }: { document: DocumentMessage }) {
       />
       <p className="result-summary">{getResultSummary(document.text)}</p>
       {table ? (
-        <ResultTableView table={table} />
+        <ResultTableView table={table} onOpenDocumentDetail={onOpenDocumentDetail} />
       ) : items.length > 0 ? (
         <div className="result-list">
           {items.map((item, index) => (
@@ -477,32 +540,61 @@ function GenericResultDocument({ document }: { document: DocumentMessage }) {
   );
 }
 
-function ResultTableView({ table }: { table: ResultTable }) {
+function ResultTableView({
+  table,
+  onOpenDocumentDetail
+}: {
+  table: ResultTable;
+  onOpenDocumentDetail: (type: "order" | "invoice", id: string) => void;
+}) {
+  const actionType = getResultTableActionType(table);
+  const gridTemplateColumns = actionType
+    ? `${buildResultTableColumns(table.columns)} 92px`
+    : buildResultTableColumns(table.columns);
+
   return (
     <div className="result-table-shell" role="table" aria-label={table.title}>
       <div
         className="result-table-row result-table-head"
         role="row"
-        style={{ gridTemplateColumns: buildResultTableColumns(table.columns.length) }}
+        style={{ gridTemplateColumns }}
       >
         {table.columns.map((column) => (
           <span key={column} role="columnheader">{column}</span>
         ))}
+        {actionType ? <span role="columnheader">Acao</span> : null}
       </div>
       {table.rows.map((row, rowIndex) => (
         <div
-          key={`${table.title}-${rowIndex}-${row.join("|")}`}
+          key={`${table.title}-${rowIndex}-${row[0] ?? "row"}`}
           className="result-table-row"
           role="row"
-          style={{ gridTemplateColumns: buildResultTableColumns(table.columns.length) }}
+          style={{ gridTemplateColumns }}
         >
           {row.map((cell, cellIndex) => (
-            <span key={`${cellIndex}-${cell}`} role="cell">{cell}</span>
+            <span key={`${rowIndex}-${cellIndex}`} role="cell" title={cell}>{cell}</span>
           ))}
+          {actionType ? (
+            <span className="result-table-action-cell" role="cell">
+              <button type="button" onClick={() => onOpenDocumentDetail(actionType, row[0] ?? "")}>
+                Ver
+              </button>
+            </span>
+          ) : null}
         </div>
       ))}
     </div>
   );
+}
+
+function getResultTableActionType(table: ResultTable): "order" | "invoice" | null {
+  if (table.title === "Pedidos") {
+    return "order";
+  }
+  if (table.title === "Notas fiscais") {
+    return "invoice";
+  }
+  return null;
 }
 
 function ExecutionPlanDocument({ plan }: { plan: ExecutionPlan }) {
@@ -600,9 +692,23 @@ function SalesOrderDocument({
   );
 }
 
-function ConfirmedOrderDocument({ invoice, order }: { invoice: ConceptInvoice | null; order: SalesOrder }) {
+function ConfirmedOrderDocument({
+  invoice,
+  order,
+  onBackToList
+}: {
+  invoice: ConceptInvoice | null;
+  order: SalesOrder;
+  onBackToList?: () => void;
+}) {
   return (
     <article className="document-card">
+      {onBackToList ? (
+        <button type="button" className="secondary-action back-action" onClick={onBackToList}>
+          <UiIcon label="<" size={16} />
+          Voltar para listagem
+        </button>
+      ) : null}
       <DocumentTitle
         icon={<UiIcon label="DOC" size={20} />}
         kicker="Confirmado"
@@ -622,6 +728,26 @@ function ConfirmedOrderDocument({ invoice, order }: { invoice: ConceptInvoice | 
         </div>
       </div>
       {invoice ? <InvoiceDocument invoice={invoice} /> : null}
+    </article>
+  );
+}
+
+function InvoiceDetailDocument({
+  invoice,
+  onBackToList
+}: {
+  invoice: ConceptInvoice;
+  onBackToList?: () => void;
+}) {
+  return (
+    <article className="document-card">
+      {onBackToList ? (
+        <button type="button" className="secondary-action back-action" onClick={onBackToList}>
+          <UiIcon label="<" size={16} />
+          Voltar para listagem
+        </button>
+      ) : null}
+      <InvoiceDocument invoice={invoice} />
     </article>
   );
 }
@@ -955,6 +1081,12 @@ function inferDocumentTitle(response: AgentResponse) {
   if (firstAuditAction.includes("list_inventory_movements") || text.includes("historico de estoque")) {
     return "Historico de estoque";
   }
+  if (firstAuditAction.includes("list_sales_orders") || firstAuditAction.includes("list_recent_orders") || text.includes("pedido")) {
+    return "Lista de pedidos";
+  }
+  if (firstAuditAction.includes("list_concept_invoices") || text.includes("nota(s) fiscal")) {
+    return "Lista de notas fiscais";
+  }
   if (firstAuditAction.includes("create_customer") || text.includes("cliente")) {
     return "Cadastro de cliente";
   }
@@ -963,12 +1095,6 @@ function inferDocumentTitle(response: AgentResponse) {
   }
   if (firstAuditAction.includes("create_supplier") || text.includes("fornecedor")) {
     return "Cadastro de fornecedor";
-  }
-  if (firstAuditAction.includes("list_concept_invoices") || text.includes("nota(s) fiscal")) {
-    return "Lista de notas fiscais";
-  }
-  if (firstAuditAction.includes("list_sales_orders") || firstAuditAction.includes("list_recent_orders") || text.includes("pedido")) {
-    return "Lista de pedidos";
   }
   return "Resultado da solicitacao";
 }
@@ -1017,18 +1143,7 @@ function parseResultTable(document: DocumentMessage): ResultTable | null {
 function parseSalesOrderList(text: string): ResultTable | null {
   const items = extractSemicolonItems(text);
   const rows = items
-    .map((item) => {
-      const match = item.match(/^(SO-\d+)\s+para\s+(.+?)\s+\((.+?)\)$/i);
-      if (!match) {
-        return null;
-      }
-      const details = match[3] ?? "";
-      const detailParts = details.split(",").map((part) => part.trim());
-      const total = detailParts.find((part) => /^total\s+/i.test(part))?.replace(/^total\s+/i, "") ?? "-";
-      const status = detailParts.find((part) => /^(confirmado|cancelado|rascunho)$/i.test(part)) ?? "-";
-      const itemCount = detailParts.find((part) => /item/i.test(part)) ?? "-";
-      return [match[1] ?? "-", match[2] ?? "-", status, itemCount, total];
-    })
+    .map(parseSalesOrderListItem)
     .filter((row): row is string[] => Boolean(row));
 
   if (!rows.length) {
@@ -1036,9 +1151,58 @@ function parseSalesOrderList(text: string): ResultTable | null {
   }
   return {
     title: "Pedidos",
-    columns: ["Pedido", "Cliente", "Status", "Itens", "Total"],
+    columns: ["Pedido", "Criado em", "Cliente", "Status", "Itens", "Total"],
     rows
   };
+}
+
+function parseSalesOrderListItem(item: string) {
+  if (item.includes("|")) {
+    return parsePipedSalesOrderListItem(item);
+  }
+
+  const orderMatch = item.match(/^(SO-\d+)\s+para\s+/i);
+  if (!orderMatch?.[1]) {
+    return null;
+  }
+
+  const orderId = orderMatch[1];
+  const rest = item.slice(orderMatch[0].length);
+  const detailsStart = rest.lastIndexOf(" (");
+  const detailsEnd = rest.endsWith(")") ? rest.length - 1 : -1;
+  if (detailsStart < 0 || detailsEnd < detailsStart) {
+    return null;
+  }
+
+  const customer = rest.slice(0, detailsStart).trim();
+  const details = rest.slice(detailsStart + 2, detailsEnd);
+  const detailParts = details.split(",").map((part) => part.trim());
+  const total = detailParts.find((part) => /^total\s+/i.test(part))?.replace(/^total\s+/i, "") ?? "-";
+  const status = detailParts.find((part) => /^(confirmado|cancelado|rascunho)$/i.test(part)) ?? "-";
+  const itemCount = detailParts.find((part) => /item/i.test(part)) ?? "-";
+
+  return [orderId, "-", customer || "-", status, itemCount, total];
+}
+
+function parsePipedSalesOrderListItem(item: string) {
+  const parts = item.split("|").map((part) => part.trim()).filter(Boolean);
+  const orderId = parts[0];
+  if (!orderId?.match(/^SO-\d+$/i)) {
+    return null;
+  }
+
+  return [
+    orderId,
+    readLabeledListPart(parts, /^criado em\s+/i),
+    readLabeledListPart(parts, /^cliente\s+/i),
+    readLabeledListPart(parts, /^status\s+/i),
+    readLabeledListPart(parts, /^itens?\s+/i),
+    readLabeledListPart(parts, /^total\s+/i)
+  ];
+}
+
+function readLabeledListPart(parts: string[], label: RegExp) {
+  return parts.find((part) => label.test(part))?.replace(label, "").trim() || "-";
 }
 
 function parseCustomerList(text: string): ResultTable | null {
@@ -1121,6 +1285,10 @@ function parseInvoiceList(text: string): ResultTable | null {
   const items = extractSemicolonItems(text);
   const rows = items
     .map((item) => {
+      if (item.includes("|")) {
+        return parsePipedInvoiceListItem(item);
+      }
+
       const match = item.match(/^(CI-\d+)\s+do\s+pedido\s+(SO-\d+)\s+para\s+(.+?)\s+\((.+?)\)$/i);
       if (!match) {
         return null;
@@ -1129,7 +1297,7 @@ function parseInvoiceList(text: string): ResultTable | null {
       const status = details[0] ?? "-";
       const amount = details.find((part) => /^valor\s+/i.test(part))?.replace(/^valor\s+/i, "") ?? "-";
       const changed = details.find((part) => /pedido/i.test(part)) ?? "-";
-      return [match[1] ?? "-", match[2] ?? "-", match[3] ?? "-", status, amount, changed];
+      return [match[1] ?? "-", "-", match[2] ?? "-", match[3] ?? "-", status, amount, changed];
     })
     .filter((row): row is string[] => Boolean(row));
 
@@ -1138,9 +1306,27 @@ function parseInvoiceList(text: string): ResultTable | null {
   }
   return {
     title: "Notas fiscais",
-    columns: ["NF", "Pedido", "Cliente", "Status", "Valor", "Pedido"],
+    columns: ["NF", "Emissao", "Pedido", "Cliente", "Status", "Valor", "Situacao"],
     rows
   };
+}
+
+function parsePipedInvoiceListItem(item: string) {
+  const parts = item.split("|").map((part) => part.trim()).filter(Boolean);
+  const invoiceId = parts[0];
+  if (!invoiceId?.match(/^CI-\d+$/i)) {
+    return null;
+  }
+
+  return [
+    invoiceId,
+    readLabeledListPart(parts, /^emitida em\s+/i),
+    readLabeledListPart(parts, /^pedido\s+/i),
+    readLabeledListPart(parts, /^cliente\s+/i),
+    readLabeledListPart(parts, /^status\s+/i),
+    readLabeledListPart(parts, /^valor\s+/i),
+    parts.find((part) => /^pedido\s+(?:alterado|sem)/i.test(part)) ?? "-"
+  ];
 }
 
 function parseInventoryMovementList(text: string): ResultTable | null {
@@ -1174,7 +1360,15 @@ function extractSemicolonItems(text: string) {
     .filter(Boolean);
 }
 
-function buildResultTableColumns(count: number) {
+function buildResultTableColumns(columns: number | string[]) {
+  if (Array.isArray(columns) && columns.join("|") === "Pedido|Criado em|Cliente|Status|Itens|Total") {
+    return "130px 130px minmax(220px, 1fr) 120px 100px 150px";
+  }
+  if (Array.isArray(columns) && columns.join("|") === "NF|Emissao|Pedido|Cliente|Status|Valor|Situacao") {
+    return "120px 130px 120px minmax(220px, 1fr) 120px 150px 210px";
+  }
+
+  const count = Array.isArray(columns) ? columns.length : columns;
   if (count === 8) {
     return "150px minmax(180px, 1fr) 150px 80px 140px 140px 110px minmax(220px, 1fr)";
   }

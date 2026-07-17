@@ -228,6 +228,13 @@ export const RemoveSalesOrderLineInputSchema = z.object({
   productId: z.string()
 });
 
+export const ApplySalesOrderDiscountInputSchema = z.object({
+  salesOrderId: z.string(),
+  productId: z.string().nullable().optional(),
+  discountType: z.enum(["percent", "amount"]),
+  value: z.number().positive()
+});
+
 export const CancelSalesOrderInputSchema = z.object({
   salesOrderId: z.string()
 });
@@ -524,6 +531,7 @@ export type ListInventoryMovementsInput = z.infer<typeof ListInventoryMovementsI
 export type AddSalesOrderLineInput = z.infer<typeof AddSalesOrderLineInputSchema>;
 export type SetSalesOrderLineQuantityInput = z.infer<typeof SetSalesOrderLineQuantityInputSchema>;
 export type RemoveSalesOrderLineInput = z.infer<typeof RemoveSalesOrderLineInputSchema>;
+export type ApplySalesOrderDiscountInput = z.infer<typeof ApplySalesOrderDiscountInputSchema>;
 export type CancelSalesOrderInput = z.infer<typeof CancelSalesOrderInputSchema>;
 export type DuplicateSalesOrderInput = z.infer<typeof DuplicateSalesOrderInputSchema>;
 export type SalesOrderStatus = z.infer<typeof SalesOrderStatusSchema>;

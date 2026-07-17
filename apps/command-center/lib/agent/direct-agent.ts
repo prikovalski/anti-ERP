@@ -20,6 +20,7 @@ import type {
 import { getCapabilityGateway } from "../capabilities";
 import { recordAgentStep } from "../observability/mcp-trace";
 import { createObservedCapabilityGateway } from "../observability/observed-gateway";
+import { buildClarifyingFallbackQuestion } from "./clarifying-fallback";
 import { parseIntentLocally } from "./intent-parser";
 import { buildSemanticPlan, type SemanticPlan } from "./semantic-plan";
 
@@ -348,6 +349,50 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     });
   }
 
+  const explicitDiscountCommand = parseExplicitDiscountCommand(input.message);
+  if (explicitDiscountCommand) {
+    await recordDirectDecision("direct_route_selected", {
+      route: "sales_order_discount",
+      discountType: explicitDiscountCommand.discountType,
+      scope: explicitDiscountCommand.productQuery ? "item" : "order"
+    });
+    const salesOrderId = explicitDiscountCommand.salesOrderId ?? input.lastOrderId ?? null;
+    if (!salesOrderId) {
+      return response("Qual pedido devo alterar para aplicar o desconto?");
+    }
+
+    let productId: string | null = null;
+    let productName: string | null = null;
+    if (explicitDiscountCommand.productQuery) {
+      const product = await resolveProductByQuery(gateway, explicitDiscountCommand.productQuery);
+      if (!product) {
+        return response(`Nao encontrei o produto ${explicitDiscountCommand.productQuery}. Qual item do pedido deve receber o desconto?`);
+      }
+      productId = product.id;
+      productName = product.name;
+    }
+
+    try {
+      const order = await gateway.applySalesOrderDiscount({
+        salesOrderId,
+        productId,
+        discountType: explicitDiscountCommand.discountType,
+        value: explicitDiscountCommand.value
+      });
+      const discountLabel = explicitDiscountCommand.discountType === "percent"
+        ? `${explicitDiscountCommand.value}%`
+        : formatMoney(explicitDiscountCommand.value);
+      const scope = productName ? `no item ${productName}` : "no pedido todo";
+      return response(`Apliquei desconto de ${discountLabel} ${scope}. ${describeOrder(order)}`, {
+        order,
+        lastOrderId: order.id,
+        auditEvents: [audit("apply_sales_order_discount", `Desconto aplicado no pedido ${order.id}.`)]
+      });
+    } catch (error) {
+      return response(formatDiscountError(error));
+    }
+  }
+
   const explicitOrderCommand = parseExplicitOrderCommand(input.message);
 
   if (explicitOrderCommand.action === "get" && explicitOrderCommand.salesOrderId) {
@@ -439,6 +484,15 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   }
 
   if (intent.intent === "analytics_query") {
+    if (isVagueAnalyticsRequest(input.message)) {
+      await recordDirectDecision("direct_route_selected", {
+        route: "analytics_clarification",
+        intent: intent.intent
+      });
+      return response(buildClarifyingFallbackQuestion(input.message), {
+        auditEvents: [audit("clarification_required", "Agente pediu esclarecimento para relatorio sem metrica definida.")]
+      });
+    }
     await recordDirectDecision("direct_route_selected", {
       route: isManagerialReportRequest(input.message) ? "managerial_report" : "analytics",
       intent: intent.intent,
@@ -638,7 +692,9 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     route: "unknown",
     intent: intent.intent
   });
-  return response("Nao consegui executar esse comando pelo executor local. Tente ser mais especifica.");
+  return response(buildClarifyingFallbackQuestion(input.message), {
+    auditEvents: [audit("clarification_required", "Agente pediu esclarecimento para uma mensagem sem rota executavel.")]
+  });
 }
 
 async function executeSemanticSalesOrderPlan(gateway: ReturnType<typeof createObservedCapabilityGateway>, plan: SemanticPlan) {
@@ -769,13 +825,14 @@ function normalizeProductQuery(value: string) {
     .replace(/\b(?:para|pra|no|na|do|da|de)\b\s*$/i, "")
     .trim();
   const dictionary: Record<string, string> = {
+    mouse: "mouse",
     monitores: "monitor",
     notebooks: "notebook",
     mouses: "mouse",
     teclados: "teclado"
   };
   const normalized = normalizeText(cleaned);
-  return dictionary[normalized] ?? cleaned.replace(/s$/i, "");
+  return dictionary[normalized] ?? cleaned.replace(/(?<!s)s$/i, "");
 }
 
 function extractThreshold(message: string) {
@@ -828,6 +885,86 @@ function parseExplicitOrderCommand(message: string): {
     return { action: "list", salesOrderId: null, filters: inferOrderListFilters(message) };
   }
   return { action: null, salesOrderId, filters: {} };
+}
+
+function parseExplicitDiscountCommand(message: string): {
+  salesOrderId: string | null;
+  productQuery: string | null;
+  discountType: "percent" | "amount";
+  value: number;
+} | null {
+  const normalized = normalizeText(message);
+  if (!/\b(desconto|descontar|desconte|abatimento|abater|aplique|aplicar)\b/.test(normalized)) {
+    return null;
+  }
+  if (!/\b(pedido|item|produto|total|todo|inteiro)\b/.test(normalized)) {
+    return null;
+  }
+
+  const percent = extractDiscountPercent(message);
+  const amount = percent === null ? extractDiscountAmount(message) : null;
+  if (percent === null && amount === null) {
+    return null;
+  }
+
+  return {
+    salesOrderId: extractSalesOrderId(message),
+    productQuery: extractDiscountProductQuery(message),
+    discountType: percent !== null ? "percent" : "amount",
+    value: percent ?? amount!
+  };
+}
+
+function extractDiscountPercent(message: string) {
+  const normalized = normalizeText(message);
+  const symbolMatch = normalized.match(/\b(\d+(?:[,.]\d+)?)\s*%/);
+  if (symbolMatch?.[1]) {
+    return parseDecimal(symbolMatch[1]);
+  }
+  const textMatch = normalized.match(/\b(\d+(?:[,.]\d+)?)\s+por\s+cento\b/);
+  return textMatch?.[1] ? parseDecimal(textMatch[1]) : null;
+}
+
+function extractDiscountAmount(message: string) {
+  const normalized = normalizeText(message);
+  const currencyAfter = normalized.match(/\b(\d+(?:[,.]\d+)?)\s*(?:reais|real)\b/);
+  if (currencyAfter?.[1]) {
+    return parseDecimal(currencyAfter[1]);
+  }
+  const currencyBefore = normalized.match(/\br\$\s*(\d+(?:[,.]\d+)?)/);
+  if (currencyBefore?.[1]) {
+    return parseDecimal(currencyBefore[1]);
+  }
+  const discountAfter = normalized.match(/\bdesconto\s+(?:de\s+)?(\d+(?:[,.]\d+)?)\b/);
+  if (discountAfter?.[1]) {
+    return parseDecimal(discountAfter[1]);
+  }
+  const discountBefore = normalized.match(/\b(\d+(?:[,.]\d+)?)\s+(?:de\s+)?desconto\b/);
+  return discountBefore?.[1] ? parseDecimal(discountBefore[1]) : null;
+}
+
+function extractDiscountProductQuery(message: string) {
+  const normalized = normalizeText(message);
+  if (/\b(pedido\s+(?:todo|inteiro)|total\s+do\s+pedido|pedido)\b/.test(normalized)
+    && !/\b(item|produto)\b/.test(normalized)) {
+    return null;
+  }
+  const productMatch = message.match(/\b(?:item|produto)\s+(.+?)(?=\s+(?:do|da|no|na|em|para|pra)\s+(?:o\s+|a\s+)?pedido|\s+(?:com|de)\s+desconto|[.!?]?$)/i);
+  if (productMatch?.[1]) {
+    return normalizeProductQuery(cleanCatalogQuery(productMatch[1]));
+  }
+  const itemScopeMatch = message.match(/\b(?:no|na|sobre\s+o|sobre\s+a)\s+(.+?)(?=\s+(?:do|da)\s+(?:pedido|ordem)|\s+(?:com|de)\s+desconto|[.!?]?$)/i);
+  if (itemScopeMatch?.[1] && !/\b(pedido|total|todo|inteiro)\b/i.test(itemScopeMatch[1])) {
+    return normalizeProductQuery(cleanCatalogQuery(itemScopeMatch[1]));
+  }
+  return null;
+}
+
+function parseDecimal(value: string) {
+  const normalized = value.includes(",")
+    ? value.replace(/\./g, "").replace(",", ".")
+    : value;
+  return Number(normalized);
 }
 
 function parseExplicitCatalogCommand(message: string): {
@@ -1009,9 +1146,11 @@ function inferCatalogStatus(normalized: string): "active" | "inactive" | null {
 }
 
 function extractOrderCustomerFilter(message: string) {
-  const match = message.match(
-    /\b(?:cliente|clientes|para|da|do)\s+(.+?)(?=\s+(?:hoje|ontem|semana|mes|m[eê]s|confirmad|cancelad|rascunho|status|criados|recentes)\b|[.!?]?$)/i
-  );
+  const match = [
+    /\bpedidos?\s+(?:do|da|de|para|pra)\s+(?:o\s+|a\s+)?(?:cliente\s+)?(.+?)(?=\s+(?:hoje|ontem|semana|mes|m[eê]s|confirmad|cancelad|rascunho|status|criados|criadas|recentes)\b|[.!?]?$)/i,
+    /\b(?:cliente|clientes)\s+(.+?)(?=\s+(?:hoje|ontem|semana|mes|m[eê]s|confirmad|cancelad|rascunho|status|criados|criadas|recentes)\b|[.!?]?$)/i,
+    /\b(?:para|pra)\s+(?:o\s+|a\s+)?(.+?)(?=\s+(?:hoje|ontem|semana|mes|m[eê]s|confirmad|cancelad|rascunho|status|criados|criadas|recentes)\b|[.!?]?$)/i
+  ].map((pattern) => message.match(pattern)).find((candidate) => candidate?.[1]);
   if (!match?.[1]) {
     return null;
   }
@@ -1035,7 +1174,7 @@ function formatOrderList(orders: SalesOrder[], filters: ListSalesOrdersInput) {
   const prefix = scope ? `Encontrei ${orders.length} pedido(s) para ${scope}` : `Encontrei ${orders.length} pedido(s)`;
   return `${prefix}: ${orders
     .slice(0, 8)
-    .map((order) => `${order.id} para ${order.customer.name} (${translateStatus(order.status)}, ${order.lines.length} item(ns), total ${formatMoney(order.subtotal)})`)
+    .map((order) => `${order.id} | criado em ${formatDate(order.createdAt)} | cliente ${order.customer.name} | status ${translateStatus(order.status)} | itens ${order.lines.length} | total ${formatMoney(order.subtotal)}`)
     .join("; ")}.`;
 }
 
@@ -1059,7 +1198,7 @@ function formatInvoiceList(invoices: ConceptInvoice[], filters: ListConceptInvoi
   return `${prefix}: ${invoices
     .slice(0, 8)
     .map((invoice) =>
-      `${invoice.id} do pedido ${invoice.salesOrderId} para ${invoice.customerName} (${translateInvoiceStatus(invoice.status)}, valor ${formatMoney(invoice.amount)}, ${invoice.orderChangedAfterIssue ? "pedido alterado apos emissao" : "pedido sem alteracao"})`
+      `${invoice.id} | emitida em ${formatDate(invoice.issuedAt)} | pedido ${invoice.salesOrderId} | cliente ${invoice.customerName} | status ${translateInvoiceStatus(invoice.status)} | valor ${formatMoney(invoice.amount)} | ${invoice.orderChangedAfterIssue ? "pedido alterado apos emissao" : "pedido sem alteracao"}`
     )
     .join("; ")}.`;
 }
@@ -1128,7 +1267,16 @@ function translateInventoryMovementType(type: InventoryMovement["type"]) {
 
 function isManagerialReportRequest(message: string) {
   const normalized = normalizeText(message);
-  return /\b(relatorio|gerencial|analise|indicadores|dashboard|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos)\b/.test(normalized);
+  if (!/\b(relatorio|gerencial|analise|indicadores|dashboard|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos|faturamento|receita|vendas)\b/.test(normalized)) {
+    return false;
+  }
+  return /\b(venda|vendas|faturamento|receita|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos|top|periodo|hoje|semana|mes)\b/.test(normalized);
+}
+
+function isVagueAnalyticsRequest(message: string) {
+  const normalized = normalizeText(message);
+  return /\b(relatorio|relatorios|dashboard|analise|indicadores)\b/.test(normalized)
+    && !/\b(venda|vendas|pedido|pedidos|faturamento|receita|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque|cliente|clientes|produto|produtos|mais vendido|top|hoje|semana|mes|periodo)\b/.test(normalized);
 }
 
 function inferManagerialReportKind(message: string): ManagerialReportKind {
@@ -1161,6 +1309,23 @@ function formatInventoryError(error: unknown) {
       : "Nao executei a liberacao porque a reserva disponivel e insuficiente.";
   }
   return `Nao consegui movimentar o estoque: ${message}`;
+}
+
+function formatDiscountError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Erro desconhecido.";
+  if (/greater than 100/i.test(message)) {
+    return "O percentual de desconto nao pode ser maior que 100%. Qual desconto devo aplicar?";
+  }
+  if (/greater than the selected total/i.test(message)) {
+    return "O desconto informado e maior que o total selecionado. Qual valor de desconto devo aplicar?";
+  }
+  if (/not in sales order/i.test(message)) {
+    return "Esse item nao esta no pedido. Qual item deve receber o desconto?";
+  }
+  if (/not found/i.test(message)) {
+    return "Nao encontrei o pedido ou item informado para aplicar o desconto. Qual pedido e item devo usar?";
+  }
+  return `Nao consegui aplicar o desconto: ${message}`;
 }
 
 function describeInvoice(invoice: ConceptInvoice) {
