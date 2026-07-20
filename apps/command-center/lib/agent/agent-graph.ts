@@ -121,7 +121,7 @@ const AgentGraphState = Annotation.Root({
   response: Annotation<AgentResponse | null>
 });
 
-type AgentGraphStateValue = Record<string, any>;
+type AgentGraphStateValue = typeof AgentGraphState.State;
 
 export const antiErpAgentGraph = new StateGraph(AgentGraphState)
   .addNode("parse_local_intent", parseLocalIntentNode)

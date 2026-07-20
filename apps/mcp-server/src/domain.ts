@@ -129,7 +129,9 @@ export function createProduct(input: unknown) {
     sku: `SKU-${slugify(name).replaceAll("_", "-").toUpperCase() || "ITEM"}-${createCatalogToken().toUpperCase()}`,
     name,
     unitPrice: 0,
-    availableStock: 0
+    availableStock: 0,
+    reservedStock: 0,
+    status: "active" as const
   };
   catalogProducts.push(product);
   audit("create_product", `Created product ${product.name}`, { productId: product.id });
@@ -263,11 +265,13 @@ export function createConceptInvoice(input: unknown) {
   }
   const invoice: ConceptInvoice = {
     id: createConceptInvoiceId(),
+    status: "issued",
     salesOrderId,
     customerName: order.customer.name,
     amount: order.subtotal,
     issuedAt: now(),
-    disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document."
+    disclaimer: "Concept invoice for portfolio demo only. Not a fiscal document.",
+    orderChangedAfterIssue: false
   };
   conceptInvoices.set(invoice.id, invoice);
   audit("create_concept_invoice", `Created concept invoice ${invoice.id}`, {
