@@ -40,7 +40,7 @@ server.tool(
   "list_concept_invoices",
   {
     salesOrderId: z.string().nullable().optional(),
-    dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+    dateRange: z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]).nullable().optional(),
     status: z.enum(["issued", "canceled", "reissued"]).nullable().optional(),
     take: z.number().int().positive().max(100).nullable().optional()
   },

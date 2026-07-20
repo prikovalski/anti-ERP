@@ -368,7 +368,7 @@ function normalize(value: string) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
-function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
+function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time") {
   if (dateRange === "all_time") {
     return true;
   }
@@ -381,6 +381,9 @@ function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days"
   }
   if (dateRange === "last_7_days") {
     start.setDate(start.getDate() - 7);
+  }
+  if (dateRange === "last_30_days") {
+    start.setDate(start.getDate() - 30);
   }
   if (dateRange === "month_to_date") {
     start.setDate(1);
@@ -398,7 +401,7 @@ function buildMetricLabel(metric: string, productQuery: string | null | undefine
 function buildAnalyticsQuery(input: {
   productQuery?: string | null;
   customerQuery?: string | null;
-  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
   groupBy?: "product" | "customer" | "day" | null;
   dataSource: "mcp-memory";
 }) {

@@ -122,7 +122,7 @@ export function registerProductTools(server: McpServer, gateway: CapabilityGatew
       productId: z.string().nullable().optional(),
       salesOrderId: z.string().nullable().optional(),
       type: z.enum(["entry", "exit", "adjustment", "reservation", "reservation_release", "order_writeoff"]).nullable().optional(),
-      dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+      dateRange: z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]).nullable().optional(),
       take: z.number().int().positive().max(100).nullable().optional()
     },
     async (input) => json(await gateway.listInventoryMovements(input))

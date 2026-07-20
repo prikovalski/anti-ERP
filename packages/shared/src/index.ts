@@ -192,7 +192,7 @@ export const ListInventoryMovementsInputSchema = z.object({
   productId: z.string().nullable().optional(),
   salesOrderId: z.string().nullable().optional(),
   type: InventoryMovementTypeSchema.nullable().optional(),
-  dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+  dateRange: z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]).nullable().optional(),
   take: z.number().int().positive().max(100).nullable().optional()
 });
 
@@ -263,7 +263,7 @@ export const ConceptInvoiceStatusSchema = z.enum(["issued", "canceled", "reissue
 
 export const ListConceptInvoicesInputSchema = z.object({
   salesOrderId: z.string().nullable().optional(),
-  dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+  dateRange: z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]).nullable().optional(),
   status: ConceptInvoiceStatusSchema.nullable().optional(),
   take: z.number().int().positive().max(100).nullable().optional()
 });
@@ -276,14 +276,16 @@ export const SalesOrderStatusSchema = z.enum(["draft", "confirmed", "canceled"])
 
 export const ListSalesOrdersInputSchema = z.object({
   customerQuery: z.string().nullable().optional(),
-  dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+  dateRange: z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]).nullable().optional(),
+  dateFrom: z.string().nullable().optional(),
+  dateTo: z.string().nullable().optional(),
   status: SalesOrderStatusSchema.nullable().optional(),
   take: z.number().int().positive().max(100).nullable().optional()
 });
 
 export const AnalyticsMetricSchema = z.enum(["units_sold", "revenue", "order_count"]);
 
-export const AnalyticsDateRangeSchema = z.enum(["today", "last_7_days", "month_to_date", "all_time"]);
+export const AnalyticsDateRangeSchema = z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]);
 
 export const AnalyticsGroupBySchema = z.enum(["product", "customer", "day"]);
 
@@ -360,6 +362,40 @@ export const ManagerialReportSchema = z.object({
   })
 });
 
+export const IntelligentReportChartSchema = z.object({
+  type: z.enum(["bar", "line", "table", "kpi"]),
+  title: z.string(),
+  xKey: z.string().nullable().optional(),
+  yKey: z.string().nullable().optional()
+});
+
+export const IntelligentReportPlanSchema = z.object({
+  question: z.string(),
+  title: z.string(),
+  metric: z.string(),
+  grain: z.enum(["summary", "day", "customer", "product", "invoice", "order"]),
+  dateRange: AnalyticsDateRangeSchema,
+  entities: z.array(AnalyticsEntitySchema),
+  filters: z.array(AnalyticsFilterSchema),
+  needsClarification: z.boolean(),
+  clarificationQuestion: z.string().nullable(),
+  charts: z.array(IntelligentReportChartSchema)
+});
+
+export const IntelligentReportSchema = z.object({
+  title: z.string(),
+  summary: z.string(),
+  executiveSummary: z.array(z.string()),
+  sql: z.string(),
+  columns: z.array(z.string()),
+  rows: z.array(z.record(ManagerialReportValueSchema)),
+  insights: z.array(z.string()),
+  recommendations: z.array(z.string()),
+  plan: IntelligentReportPlanSchema,
+  dataSource: z.enum(["postgres", "demo-memory"]),
+  generatedAt: z.string()
+});
+
 export const AgentMessageSchema = z.object({
   id: z.string(),
   role: z.enum(["user", "agent"]),
@@ -434,6 +470,7 @@ export const AgentResponseSchema = z.object({
   invoice: ConceptInvoiceSchema.nullable().optional(),
   analyticsResult: AnalyticsResultSchema.nullable().optional(),
   managerialReport: ManagerialReportSchema.nullable().optional(),
+  intelligentReport: IntelligentReportSchema.nullable().optional(),
   executionPlan: ExecutionPlanSchema.nullable().optional(),
   clarification: ClarificationRequestSchema.nullable().optional(),
   auditEvents: z.array(AuditEventSchema),
@@ -553,6 +590,9 @@ export type AnalyticsResult = z.infer<typeof AnalyticsResultSchema>;
 export type ManagerialReportKind = z.infer<typeof ManagerialReportKindSchema>;
 export type QueryManagerialReportInput = z.infer<typeof QueryManagerialReportInputSchema>;
 export type ManagerialReport = z.infer<typeof ManagerialReportSchema>;
+export type IntelligentReportChart = z.infer<typeof IntelligentReportChartSchema>;
+export type IntelligentReportPlan = z.infer<typeof IntelligentReportPlanSchema>;
+export type IntelligentReport = z.infer<typeof IntelligentReportSchema>;
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 export type ConversationEntity = z.infer<typeof ConversationEntitySchema>;
 export type ConversationContext = z.infer<typeof ConversationContextSchema>;

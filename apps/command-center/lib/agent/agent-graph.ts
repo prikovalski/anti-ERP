@@ -2160,9 +2160,11 @@ function formatAnalyticsAnswer(
       ? "hoje"
       : dateRange === "last_7_days"
         ? "nos ultimos 7 dias"
-        : dateRange === "month_to_date"
-          ? "neste mes"
-          : "no historico";
+        : dateRange === "last_30_days"
+          ? "nos ultimos 30 dias"
+          : dateRange === "month_to_date"
+            ? "neste mes"
+            : "no historico";
   const subject = productQueries?.length
     ? productQueries.join(" e ")
     : productQuery ? `${productQuery}` : metric === "units_sold" ? "produtos" : "vendas";

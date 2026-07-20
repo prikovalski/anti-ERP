@@ -1,6 +1,7 @@
 import {
   AnalyticsResult,
   ConceptInvoice,
+  IntelligentReport,
   InventoryMovement,
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
@@ -16,6 +17,7 @@ import {
   demoCustomers,
   demoProducts
 } from "@anti-erp/shared";
+import { planIntelligentReport } from "@anti-erp/capabilities";
 import type { CapabilityGateway } from "./types";
 
 const salesOrders = new Map<string, SalesOrder>();
@@ -883,7 +885,8 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     const take = input.take ?? 25;
     return Array.from(salesOrders.values())
       .filter((order) => !input.status || order.status === input.status)
-      .filter((order) => isInsideDateRange(order.createdAt, input.dateRange ?? "all_time"))
+      .filter((order) => isInsideExplicitDateRange(order.createdAt, input.dateFrom, input.dateTo)
+        && isInsideDateRange(order.createdAt, input.dateRange ?? "all_time"))
       .filter((order) => !customerQuery || normalize(order.customer.name).includes(customerQuery))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, take);
@@ -921,7 +924,7 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     metric: "units_sold" | "revenue" | "order_count";
     productQuery?: string | null;
     customerQuery?: string | null;
-    dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+    dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
     groupBy?: "product" | "customer" | "day" | null;
   }) {
     const query = normalize(input.productQuery ?? "");
@@ -976,9 +979,126 @@ export class DemoCapabilityGateway implements CapabilityGateway {
       dataSource: "demo-memory"
     });
   }
+
+  async queryIntelligentReport(input: { question: string }): Promise<IntelligentReport> {
+    const plan = planIntelligentReport(input.question);
+    if (plan.needsClarification) {
+      return {
+        title: "Relatorio gerencial - esclarecimento necessario",
+        summary: plan.clarificationQuestion ?? "Preciso de mais contexto para gerar o relatorio.",
+        executiveSummary: [plan.clarificationQuestion ?? "Informe o indicador desejado."],
+        sql: "",
+        columns: [],
+        rows: [],
+        insights: [],
+        recommendations: ["Diga, por exemplo: faturamento por cliente este mes, produtos mais vendidos, notas emitidas ou risco de estoque."],
+        plan,
+        dataSource: "demo-memory",
+        generatedAt: now()
+      };
+    }
+
+    const rows = buildDemoIntelligentReportRows(plan);
+    const columns = rows[0] ? Object.keys(rows[0]) : inferDemoIntelligentReportColumns(plan);
+    const first = rows[0] as Record<string, string | number | boolean | null> | undefined;
+    const leader = first ? String(first.produto ?? first.cliente ?? first.nota ?? first.dia ?? "principal item") : "sem dados";
+
+    return {
+      title: plan.metric === "invoices"
+        ? "Notas fiscais emitidas"
+        : plan.metric === "stock"
+          ? "Diagnostico gerencial de estoque"
+          : "Relatorio gerencial inteligente",
+      summary: rows.length ? `Relatorio gerado com ${rows.length} linha(s). Destaque: ${leader}.` : "Nao encontrei dados para os filtros informados.",
+      executiveSummary: rows.length
+        ? [`${leader} aparece como principal linha do relatorio.`, "Relatorio gerado a partir da memoria demo."]
+        : ["Sem dados suficientes para conclusoes no periodo."],
+      sql: "-- demo-memory: consulta sem SQL",
+      columns,
+      rows,
+      insights: rows.length ? [`${leader} lidera a analise.`] : ["Sem dados para analisar."],
+      recommendations: ["Use o relatorio como ponto de partida para investigar causas e proximas acoes."],
+      plan,
+      dataSource: "demo-memory",
+      generatedAt: now()
+    };
+  }
 }
 
 export const demoCapabilityGateway = new DemoCapabilityGateway();
+
+function buildDemoIntelligentReportRows(plan: ReturnType<typeof planIntelligentReport>) {
+  const confirmedOrders = Array.from(salesOrders.values()).filter(
+    (order) => order.status === "confirmed" && isInsideDateRange(order.createdAt, plan.dateRange)
+  );
+
+  if (plan.metric === "invoices") {
+    return Array.from(invoices.values())
+      .filter((invoice) => invoice.status === "issued" && isInsideDateRange(invoice.issuedAt, plan.dateRange))
+      .sort((a, b) => b.issuedAt.localeCompare(a.issuedAt))
+      .slice(0, 50)
+      .map((invoice) => ({
+        nota: invoice.id,
+        emissao: invoice.issuedAt.slice(0, 10),
+        pedido: invoice.salesOrderId,
+        cliente: invoice.customerName,
+        status: invoice.status,
+        valor: invoice.amount
+      }));
+  }
+
+  if (plan.metric === "stock") {
+    return demoProducts
+      .map((product) => ({
+        produto: product.name,
+        sku: product.sku,
+        disponivel: product.availableStock,
+        reservado: product.reservedStock,
+        preco: product.unitPrice
+      }))
+      .sort((a, b) => a.disponivel - b.disponivel);
+  }
+
+  if (plan.grain === "customer") {
+    return Array.from(groupByMap(confirmedOrders, (order) => order.customer.name).entries())
+      .map(([cliente, orders]) => ({
+        cliente,
+        pedidos: orders.length,
+        faturamento: roundMoney(orders.flatMap((order) => order.lines).reduce((sum, line) => sum + line.total, 0)),
+        ultimo_pedido: orders.map((order) => order.createdAt.slice(0, 10)).sort().at(-1) ?? "-"
+      }))
+      .sort((a, b) => Number(b.faturamento) - Number(a.faturamento));
+  }
+
+  if (plan.grain === "day") {
+    return Array.from(groupByMap(confirmedOrders, (order) => order.createdAt.slice(0, 10)).entries())
+      .map(([dia, orders]) => ({
+        dia,
+        pedidos: orders.length,
+        quantidade: orders.flatMap((order) => order.lines).reduce((sum, line) => sum + line.quantity, 0),
+        faturamento: roundMoney(orders.flatMap((order) => order.lines).reduce((sum, line) => sum + line.total, 0))
+      }))
+      .sort((a, b) => a.dia.localeCompare(b.dia));
+  }
+
+  const lines = confirmedOrders.flatMap((order) => order.lines);
+  return Array.from(groupByMap(lines, (line) => line.name).entries())
+    .map(([produto, productLines]) => ({
+      produto,
+      quantidade: productLines.reduce((sum, line) => sum + line.quantity, 0),
+      faturamento: roundMoney(productLines.reduce((sum, line) => sum + line.total, 0)),
+      pedidos: productLines.length
+    }))
+    .sort((a, b) => Number(b.faturamento) - Number(a.faturamento));
+}
+
+function inferDemoIntelligentReportColumns(plan: ReturnType<typeof planIntelligentReport>) {
+  if (plan.metric === "invoices") return ["nota", "emissao", "pedido", "cliente", "status", "valor"];
+  if (plan.metric === "stock") return ["produto", "sku", "disponivel", "reservado", "preco"];
+  if (plan.grain === "customer") return ["cliente", "pedidos", "faturamento", "ultimo_pedido"];
+  if (plan.grain === "day") return ["dia", "pedidos", "quantidade", "faturamento"];
+  return ["produto", "quantidade", "faturamento", "pedidos"];
+}
 
 function buildMetricLabel(metric: string, productQuery: string | null | undefined, dateRange: string) {
   const subject = productQuery ? productQuery : "sales";
@@ -986,7 +1106,18 @@ function buildMetricLabel(metric: string, productQuery: string | null | undefine
   return `${metric.replaceAll("_", " ")} for ${subject} ${period}`;
 }
 
-function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
+function isInsideExplicitDateRange(createdAt: string, dateFrom?: string | null, dateTo?: string | null) {
+  if (!dateFrom && !dateTo) {
+    return true;
+  }
+  const date = new Date(createdAt);
+  const start = dateFrom ? new Date(`${dateFrom}T00:00:00.000`) : new Date(0);
+  const end = dateTo ? new Date(`${dateTo}T00:00:00.000`) : new Date();
+  end.setDate(end.getDate() + 1);
+  return date >= start && date < end;
+}
+
+function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time") {
   if (dateRange === "all_time") {
     return true;
   }
@@ -1000,6 +1131,9 @@ function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days"
   if (dateRange === "last_7_days") {
     start.setDate(start.getDate() - 7);
   }
+  if (dateRange === "last_30_days") {
+    start.setDate(start.getDate() - 30);
+  }
   if (dateRange === "month_to_date") {
     start.setDate(1);
     start.setHours(0, 0, 0, 0);
@@ -1010,7 +1144,7 @@ function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days"
 function buildAnalyticsQuery(input: {
   productQuery?: string | null;
   customerQuery?: string | null;
-  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
   groupBy?: "product" | "customer" | "day" | null;
   dataSource: "demo-memory";
 }) {
@@ -1077,7 +1211,7 @@ function inferManagerialReportKind(question: string): ManagerialReportKind {
 
 function buildManagerialReport(input: {
   kind: ManagerialReportKind;
-  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
   take: number;
   orders: SalesOrder[];
   products: Product[];
@@ -1218,7 +1352,7 @@ function managerialReport(input: {
   kind: ManagerialReportKind;
   title: string;
   summary: string;
-  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
   dataSource: "demo-memory" | "postgres";
   columns: string[];
   rows: Array<Record<string, string | number | boolean | null>>;
@@ -1272,6 +1406,6 @@ function formatReportMoney(value: number) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 }
 
-function translateReportDateRange(dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
-  return dateRange === "today" ? "hoje" : dateRange === "last_7_days" ? "ultimos 7 dias" : dateRange === "month_to_date" ? "mes atual" : "todo o periodo";
+function translateReportDateRange(dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time") {
+  return dateRange === "today" ? "hoje" : dateRange === "last_7_days" ? "ultimos 7 dias" : dateRange === "last_30_days" ? "ultimos 30 dias" : dateRange === "month_to_date" ? "mes atual" : "todo o periodo";
 }

@@ -5,6 +5,7 @@ import type {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  IntelligentReport,
   InventoryMovement,
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
@@ -123,4 +124,5 @@ export interface CapabilityGateway {
     groupBy?: AnalyticsGroupBy | null;
   }): Promise<AnalyticsResult>;
   queryManagerialReport(input: QueryManagerialReportInput): Promise<ManagerialReport>;
+  queryIntelligentReport(input: { question: string }): Promise<IntelligentReport>;
 }

@@ -1,6 +1,7 @@
 import {
   ConceptInvoiceSchema,
   CustomerSchema,
+  IntelligentReportSchema,
   InventoryMovementSchema,
   ListConceptInvoicesInputSchema,
   ListInventoryMovementsInputSchema,
@@ -217,7 +218,7 @@ function getRoleForTool(name: string): McpServerRole {
   return "core";
 }
 
-async function callTool<T>(name: string, args: Record<string, unknown>, schema: z.ZodType<T>) {
+async function callTool<TSchema extends z.ZodTypeAny>(name: string, args: Record<string, unknown>, schema: TSchema): Promise<z.output<TSchema>> {
   const role = getRoleForTool(name);
   const startedAt = performance.now();
 
@@ -509,7 +510,7 @@ export class McpCapabilityGateway implements CapabilityGateway {
     productQuery?: string | null;
     productQueries?: string[] | null;
     customerQuery?: string | null;
-    dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+    dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
     groupBy?: "product" | "customer" | "day" | null;
   }) {
     return callTool("query_sales_metrics", input, AnalyticsResultSchema);
@@ -517,5 +518,9 @@ export class McpCapabilityGateway implements CapabilityGateway {
 
   async queryManagerialReport(input: z.infer<typeof QueryManagerialReportInputSchema>) {
     return callTool("query_managerial_report", input, ManagerialReportSchema);
+  }
+
+  async queryIntelligentReport(input: { question: string }) {
+    return callTool("query_intelligent_report", input, IntelligentReportSchema);
   }
 }

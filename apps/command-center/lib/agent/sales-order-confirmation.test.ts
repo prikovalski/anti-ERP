@@ -52,7 +52,7 @@ test("confirmSalesOrder creates order and concept invoice", async () => {
 });
 
 function createGatewayStub(calls: string[]): CapabilityGateway {
-  return {
+  const stub: Partial<CapabilityGateway> = {
     async createSalesOrder(input) {
       calls.push("createSalesOrder");
       assert.equal(input.confirmedByUser, true);
@@ -67,32 +67,25 @@ function createGatewayStub(calls: string[]): CapabilityGateway {
       calls.push("createConceptInvoice");
       return {
         id: "CI-9001",
+        status: "issued",
         salesOrderId: input.salesOrderId,
         customerName: "Cliente Teste",
         amount: 50,
         issuedAt: "2026-07-08T00:00:00.000Z",
-        disclaimer: "Concept invoice for tests."
+        disclaimer: "Concept invoice for tests.",
+        orderChangedAfterIssue: false
       };
-    },
-    createCustomer: unsupported,
-    createProduct: unsupported,
-    createSupplier: unsupported,
-    updateProduct: unsupported,
-    searchCustomer: unsupported,
-    searchProduct: unsupported,
-    validateStock: unsupported,
-    listLowStockProducts: unsupported,
-    prepareSalesOrder: unsupported,
-    addSalesOrderLine: unsupported,
-    setSalesOrderLineQuantity: unsupported,
-    removeSalesOrderLine: unsupported,
-    getSalesOrder: unsupported,
-    listRecentOrders: unsupported,
-    getTraditionalErpFlow: unsupported,
-    querySalesMetrics: unsupported
+    }
   };
-}
 
-async function unsupported(): Promise<never> {
-  throw new Error("Unsupported test gateway method.");
+  return new Proxy(stub, {
+    get(target, property) {
+      if (property in target) {
+        return target[property as keyof CapabilityGateway];
+      }
+      return async () => {
+        throw new Error(`Unsupported test gateway method: ${String(property)}.`);
+      };
+    }
+  }) as CapabilityGateway;
 }

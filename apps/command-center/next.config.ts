@@ -10,6 +10,9 @@ const nextConfig: NextConfig = {
     "@langchain/core",
     "@langchain/langgraph",
     "@modelcontextprotocol/sdk",
+    "fontkit",
+    "linebreak",
+    "pdfkit",
     "langsmith"
   ],
   transpilePackages: ["@anti-erp/shared"]

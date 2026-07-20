@@ -6,6 +6,7 @@ import type {
   ConceptInvoice,
   ConceptInvoiceStatus,
   Customer,
+  IntelligentReport,
   InventoryMovement,
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
@@ -51,6 +52,24 @@ function response(text: string, extra: Partial<AgentResponse> = {}): AgentRespon
   };
 }
 
+async function runIntelligentReport(
+  gateway: ReturnType<typeof createObservedCapabilityGateway>,
+  question: string
+) {
+  const report = await gateway.queryIntelligentReport({ question });
+  if (report.plan.needsClarification && report.plan.clarificationQuestion) {
+    return response(report.plan.clarificationQuestion, {
+      intelligentReport: report,
+      auditEvents: [audit("clarification_required", "Agente pediu esclarecimento para relatorio gerencial inteligente.")]
+    });
+  }
+
+  return response(formatIntelligentReportAnswer(report), {
+    intelligentReport: report,
+    auditEvents: [audit("query_intelligent_report", `Relatorio inteligente executado: ${report.title}.`)]
+  });
+}
+
 export async function runDirectAgent(input: { message: string; lastOrderId?: string | null }): Promise<AgentResponse> {
   await recordDirectDecision("direct_agent_start", {
     messageLength: input.message.length,
@@ -59,20 +78,10 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
   const gateway = createObservedCapabilityGateway(await getCapabilityGateway(), "capability");
   if (isManagerialReportRequest(input.message)) {
     await recordDirectDecision("direct_route_selected", {
-      route: "managerial_report",
+      route: "intelligent_report",
       kind: inferManagerialReportKind(input.message)
     });
-    const report = await gateway.queryManagerialReport({
-      question: input.message,
-      kind: inferManagerialReportKind(input.message),
-      dateRange: inferDateRange(input.message),
-      groupBy: inferGroupBy(input.message),
-      take: 10
-    });
-    return response(formatManagerialReportAnswer(report), {
-      managerialReport: report,
-      auditEvents: [audit("query_managerial_report", `Relatorio gerencial executado: ${report.kind}.`)]
-    });
+    return runIntelligentReport(gateway, input.message);
   }
 
   if (asksToListCustomers(input.message)) {
@@ -208,6 +217,17 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       const movements = await gateway.listInventoryMovements(filters);
       return response(formatInventoryMovementList(movements, filters), {
         auditEvents: [audit("list_inventory_movements", `Listadas ${movements.length} movimentacao(oes) de estoque.`)]
+      });
+    }
+
+    if (explicitInventoryCommand.action === "position") {
+      const products = await gateway.listProducts({
+        query: explicitInventoryCommand.productQuery,
+        status: "active",
+        take: 100
+      });
+      return response(formatInventoryPositionList(products), {
+        auditEvents: [audit("list_inventory_position", `Listada posicao atual de estoque de ${products.length} produto(s).`)]
       });
     }
 
@@ -361,6 +381,22 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       return response("Qual pedido devo alterar para aplicar o desconto?");
     }
 
+    const currentOrder = await gateway.getSalesOrder({ salesOrderId });
+    if (!currentOrder) {
+      return response(`Nao encontrei o pedido ${salesOrderId}. Qual pedido deve receber o desconto?`);
+    }
+    const currentDiscount = calculateOrderDiscount(currentOrder);
+    if (currentDiscount.amount > 0 && !hasExplicitDiscountConfirmation(input.message)) {
+      return response(
+        `Esse pedido ja possui desconto acumulado de ${formatMoney(currentDiscount.amount)} (${formatPercent(currentDiscount.percent)}). Voce confirma aplicar um novo desconto sobre o total atual? Para confirmar, envie: "confirmo aplicar ${formatDiscountCommandValue(explicitDiscountCommand)} no pedido ${salesOrderId}".`,
+        {
+          order: currentOrder,
+          lastOrderId: currentOrder.id,
+          auditEvents: [audit("discount_confirmation_required", `Pedido ${salesOrderId} ja possui desconto acumulado.`)]
+        }
+      );
+    }
+
     let productId: string | null = null;
     let productName: string | null = null;
     if (explicitDiscountCommand.productQuery) {
@@ -499,17 +535,7 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       metric: intent.analytics?.metric ?? inferMetric(input.message)
     });
     if (isManagerialReportRequest(input.message)) {
-      const report = await gateway.queryManagerialReport({
-        question: input.message,
-        kind: inferManagerialReportKind(input.message),
-        dateRange: intent.analytics?.dateRange ?? inferDateRange(input.message),
-        groupBy: intent.analytics?.groupBy ?? inferGroupBy(input.message),
-        take: 10
-      });
-      return response(formatManagerialReportAnswer(report), {
-        managerialReport: report,
-        auditEvents: [audit("query_managerial_report", `Relatorio gerencial executado: ${report.kind}.`)]
-      });
+      return runIntelligentReport(gateway, input.message);
     }
     const analytics = intent.analytics;
     const result = await gateway.querySalesMetrics({
@@ -744,7 +770,7 @@ async function recordDirectDecision(name: string, outputs: Record<string, unknow
 }
 
 function parseExplicitInventoryCommand(message: string): {
-  action: "entry" | "exit" | "adjustment" | "reservation" | "reservation_release" | "writeoff" | "history" | "low_stock" | null;
+  action: "entry" | "exit" | "adjustment" | "reservation" | "reservation_release" | "writeoff" | "history" | "position" | "low_stock" | null;
   productQuery: string | null;
   quantity: number | null;
   salesOrderId: string | null;
@@ -754,7 +780,11 @@ function parseExplicitInventoryCommand(message: string): {
   const normalized = normalizeText(message);
   const salesOrderId = extractSalesOrderId(message);
   const mentionsInventory =
-    /\b(estoque|estoques|entrada|saida|ajuste|ajustar|reserve|reservar|reserva|reservado|libere|liberar|baixa|baixar|baixe|historico|movimentacoes)\b/.test(normalized);
+    /\b(estoque|estoques|entrada|saida|ajuste|ajustar|reserve|reservar|reserva|reservado|libere|liberar|baixa|baixar|baixe|historico|movimentacoes)\b/.test(normalized)
+    || (/\b(adicione|adicionar|inclua|incluir)\b/.test(normalized)
+      && /\b(quantidade|quantidades|unidade|unidades)\b/.test(normalized)
+      && /\b(item|produto)\b/.test(normalized)
+      && !/\bpedido\b/.test(normalized));
   if (!mentionsInventory) {
     return { action: null, productQuery: null, quantity: null, salesOrderId, threshold: null, type: null };
   }
@@ -767,9 +797,13 @@ function parseExplicitInventoryCommand(message: string): {
   if (/\b(baixo|baixa|minimo|minima|critico|critica|alerta)\b/.test(normalized) && /\bestoque\b/.test(normalized)) {
     return { action: "low_stock", productQuery: null, quantity: null, salesOrderId, threshold, type: null };
   }
-  if (/\b(historico|movimentacoes|movimentos|extrato|liste|listar|mostre|mostrar|consultar|consulte)\b/.test(normalized)
+  if (/\b(historico|movimentacoes|movimentos|extrato)\b/.test(normalized)
     && /\b(estoque|movimentacoes|movimentos)\b/.test(normalized)) {
     return { action: "history", productQuery, quantity: null, salesOrderId, threshold: null, type };
+  }
+  if (/\b(liste|listar|mostre|mostrar|consultar|consulte|exiba|exibir|quais)\b/.test(normalized)
+    && /\b(estoque|estoques|saldo|saldos|disponivel|disponiveis)\b/.test(normalized)) {
+    return { action: "position", productQuery, quantity: null, salesOrderId, threshold: null, type: null };
   }
   if (/\b(baixa|baixar|baixe)\b/.test(normalized) && /\bpedido\b/.test(normalized)) {
     return { action: "writeoff", productQuery: null, quantity: null, salesOrderId, threshold: null, type: null };
@@ -783,7 +817,7 @@ function parseExplicitInventoryCommand(message: string): {
   if (/\b(ajuste|ajustar|ajusta|atualize|atualizar|defina|definir)\b/.test(normalized) && /\bestoque\b/.test(normalized)) {
     return { action: "adjustment", productQuery, quantity, salesOrderId, threshold: null, type: null };
   }
-  if (/\b(entrada|entrar|recebimento|receber|adicione|adicionar|inclua|incluir)\b/.test(normalized) && /\bestoque|produto|unidade|unidades\b/.test(normalized)) {
+  if (/\b(entrada|entrar|recebimento|receber|adicione|adicionar|inclua|incluir)\b/.test(normalized) && /\b(estoque|produto|item|unidade|unidades|quantidade|quantidades)\b/.test(normalized)) {
     return { action: "entry", productQuery, quantity, salesOrderId, threshold: null, type: null };
   }
   if (/\b(saida|retirada|retirar|remova|remover)\b/.test(normalized) && /\bestoque|produto|unidade|unidades\b/.test(normalized)) {
@@ -803,11 +837,15 @@ function extractInventoryQuantity(message: string) {
 }
 
 function extractInventoryProductQuery(message: string) {
-  const productLabelMatch = message.match(/\bproduto\s+(.+?)(?=\s+(?:para|pra|com|no|na|do|da|em|ao|a)\s+(?:o\s+|a\s+)?(?:pedido|estoque|\d)|[.!?]?$)/i);
+  const itemAdditionMatch = message.match(/\b(?:ao|a|no|na|do|da)\s+(?:item|produto)\s+(.+?)(?=\s+(?:para|pra|com|no|na|do|da|em|ao|a)\s+(?:o\s+|a\s+)?(?:pedido|estoque|\d)|[.!?]?$)/i);
+  if (itemAdditionMatch?.[1]) {
+    return normalizeProductQuery(cleanCatalogQuery(itemAdditionMatch[1]));
+  }
+  const productLabelMatch = message.match(/\b(?:produto|item)\s+(.+?)(?=\s+(?:para|pra|com|no|na|do|da|em|ao|a)\s+(?:o\s+|a\s+)?(?:pedido|estoque|\d)|[.!?]?$)/i);
   if (productLabelMatch?.[1]) {
     return normalizeProductQuery(cleanCatalogQuery(productLabelMatch[1]));
   }
-  const quantityProductMatch = message.match(/\b\d+\s+(?:unidades?\s+)?(?:d[eo]s?\s+)?(.+?)(?=\s+(?:para|pra|no|na|do|da)\s+(?:o\s+|a\s+)?(?:pedido|estoque)|[.!?]?$)/i);
+  const quantityProductMatch = message.match(/\b\d+\s+(?:unidades?|quantidades?)?\s+(?:d[eo]s?\s+)?(.+?)(?=\s+(?:para|pra|no|na|do|da)\s+(?:o\s+|a\s+)?(?:pedido|estoque)|[.!?]?$)/i);
   if (quantityProductMatch?.[1]) {
     return normalizeProductQuery(cleanCatalogQuery(quantityProductMatch[1]));
   }
@@ -821,7 +859,7 @@ function extractInventoryProductQuery(message: string) {
 function normalizeProductQuery(value: string) {
   const cleaned = value
     .replace(/\s+(?:para|pra|no|na|do|da)\s+(?:o\s+|a\s+)?pedido\b.*$/i, "")
-    .replace(/\b(?:unidade|unidades|itens|item)\b/gi, "")
+    .replace(/\b(?:unidade|unidades|quantidade|quantidades|itens|item)\b/gi, "")
     .replace(/\b(?:para|pra|no|na|do|da|de)\b\s*$/i, "")
     .trim();
   const dictionary: Record<string, string> = {
@@ -913,6 +951,22 @@ function parseExplicitDiscountCommand(message: string): {
     discountType: percent !== null ? "percent" : "amount",
     value: percent ?? amount!
   };
+}
+
+function hasExplicitDiscountConfirmation(message: string) {
+  const normalized = normalizeText(message);
+  return /\b(confirmo|confirmar|confirmado|pode aplicar|aplique mesmo|aplicar mesmo|sim[, ]+aplique|sim[, ]+confirmo)\b/.test(normalized);
+}
+
+function calculateOrderDiscount(order: SalesOrder) {
+  const originalSubtotal = roundMoney(order.lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0));
+  const amount = roundMoney(Math.max(0, originalSubtotal - order.subtotal));
+  const percent = originalSubtotal > 0 ? (amount / originalSubtotal) * 100 : 0;
+  return { originalSubtotal, amount, percent };
+}
+
+function formatDiscountCommandValue(command: NonNullable<ReturnType<typeof parseExplicitDiscountCommand>>) {
+  return command.discountType === "percent" ? `${command.value}% de desconto` : `${formatMoney(command.value)} de desconto`;
 }
 
 function extractDiscountPercent(message: string) {
@@ -1114,12 +1168,83 @@ function asksToListSalesOrders(message: string) {
 
 function inferOrderListFilters(message: string): ListSalesOrdersInput {
   const normalized = normalizeText(message);
+  const explicitPeriod = inferExplicitDatePeriod(message);
   return {
     customerQuery: extractOrderCustomerFilter(message),
-    dateRange: inferDateRange(message),
+    dateRange: explicitPeriod ? "all_time" : inferDateRange(message),
+    dateFrom: explicitPeriod?.dateFrom ?? null,
+    dateTo: explicitPeriod?.dateTo ?? null,
     status: inferOrderStatus(normalized),
     take: 25
   };
+}
+
+function inferExplicitDatePeriod(message: string): { dateFrom: string; dateTo: string; label: string } | null {
+  const normalized = normalizeText(message);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (/\bsemana passada\b/.test(normalized)) {
+    const currentWeekStart = startOfWeek(today);
+    const start = new Date(currentWeekStart);
+    start.setDate(currentWeekStart.getDate() - 7);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return { dateFrom: formatDateInput(start), dateTo: formatDateInput(end), label: "semana passada" };
+  }
+
+  if (/\b(ultima semana|ultimos 7 dias|ultimos sete dias)\b/.test(normalized)) {
+    const start = new Date(today);
+    start.setDate(today.getDate() - 6);
+    return { dateFrom: formatDateInput(start), dateTo: formatDateInput(today), label: "ultimos 7 dias" };
+  }
+
+  if (/\b(mes passado|m[eê]s passado)\b/.test(normalized)) {
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    return { dateFrom: formatDateInput(start), dateTo: formatDateInput(end), label: "mes passado" };
+  }
+
+  if (/\b(ultimo mes|ultimo m[eê]s|ultimos 30 dias|ultimos trinta dias)\b/.test(normalized)) {
+    const start = new Date(today);
+    start.setDate(today.getDate() - 29);
+    return { dateFrom: formatDateInput(start), dateTo: formatDateInput(today), label: "ultimos 30 dias" };
+  }
+
+  const dayMatch = normalized.match(/\bdia\s+(\d{1,2})(?:[/-](\d{1,2})(?:[/-](\d{2,4}))?)?\b/);
+  if (dayMatch?.[1]) {
+    const day = Number(dayMatch[1]);
+    const month = dayMatch[2] ? Number(dayMatch[2]) - 1 : today.getMonth();
+    const rawYear = dayMatch[3] ? Number(dayMatch[3]) : today.getFullYear();
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+    const date = new Date(year, month, day);
+    if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+      return { dateFrom: formatDateInput(date), dateTo: formatDateInput(date), label: `dia ${day}` };
+    }
+  }
+
+  return null;
+}
+
+function startOfWeek(date: Date) {
+  const start = new Date(date);
+  const day = start.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  start.setDate(start.getDate() + diff);
+  return start;
+}
+
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateFilter(value?: string | null) {
+  if (!value) return "-";
+  const [year, month, day] = value.split("-");
+  return year && month && day ? `${day}/${month}/${year}` : value;
 }
 
 function inferOrderStatus(normalized: string): SalesOrderStatus | null {
@@ -1159,23 +1284,36 @@ function extractOrderCustomerFilter(message: string) {
     .replace(/\s+/g, " ")
     .replace(/^(?:o|a|os|as|cliente|clientes)\s+/i, "")
     .replace(/[.!?]+$/g, "");
+  if (isTemporalOrderListFragment(value)) {
+    return null;
+  }
   return value || null;
 }
 
+function isTemporalOrderListFragment(value: string) {
+  const normalized = normalizeText(value);
+  return /^(?:ultima|ultimo|ultimas|ultimos|passada|passado|hoje|ontem|semana|mes|m[eê]s|dia|\d{1,2}(?:[/-]\d{1,2}(?:[/-]\d{2,4})?)?)$/.test(normalized);
+}
+
 function formatOrderList(orders: SalesOrder[], filters: ListSalesOrdersInput) {
+  const scope = formatOrderListScope(filters);
   if (!orders.length) {
-    return "Nao encontrei pedidos para esses filtros.";
+    return scope ? `Nao encontrei pedidos para ${scope}.` : "Nao encontrei pedidos para esses filtros.";
   }
-  const scope = [
-    filters.customerQuery ? `cliente ${filters.customerQuery}` : null,
-    filters.status ? `status ${translateStatus(filters.status)}` : null,
-    filters.dateRange && filters.dateRange !== "all_time" ? translateDateRange(filters.dateRange) : null
-  ].filter(Boolean).join(", ");
   const prefix = scope ? `Encontrei ${orders.length} pedido(s) para ${scope}` : `Encontrei ${orders.length} pedido(s)`;
   return `${prefix}: ${orders
     .slice(0, 8)
     .map((order) => `${order.id} | criado em ${formatDate(order.createdAt)} | cliente ${order.customer.name} | status ${translateStatus(order.status)} | itens ${order.lines.length} | total ${formatMoney(order.subtotal)}`)
     .join("; ")}.`;
+}
+
+function formatOrderListScope(filters: ListSalesOrdersInput) {
+  return [
+    filters.customerQuery ? `cliente ${filters.customerQuery}` : null,
+    filters.status ? `status ${translateStatus(filters.status)}` : null,
+    filters.dateFrom || filters.dateTo ? `periodo ${formatDateFilter(filters.dateFrom)} a ${formatDateFilter(filters.dateTo)}` : null,
+    filters.dateRange && filters.dateRange !== "all_time" ? translateDateRange(filters.dateRange) : null
+  ].filter(Boolean).join(", ");
 }
 
 function describeOrder(order: SalesOrder) {
@@ -1227,6 +1365,14 @@ function formatProductList(products: Product[]) {
     .join("; ")}.`;
 }
 
+function formatInventoryPositionList(products: Product[]) {
+  if (!products.length) return "Nao encontrei produtos ativos em estoque.";
+  return `Estoque atual:\nProduto | Quantidade disponivel\n${products
+    .slice(0, 100)
+    .map((product) => `${product.name} | ${product.availableStock}`)
+    .join("\n")}`;
+}
+
 function formatInventoryMovement(movement: InventoryMovement) {
   return `Movimentacao de estoque registrada: ${movement.productName} (${movement.sku}), ${translateInventoryMovementType(movement.type)}, quantidade ${movement.quantity}, disponivel ${movement.previousAvailableStock} -> ${movement.nextAvailableStock}, reservado ${movement.previousReservedStock} -> ${movement.nextReservedStock}.`;
 }
@@ -1267,10 +1413,10 @@ function translateInventoryMovementType(type: InventoryMovement["type"]) {
 
 function isManagerialReportRequest(message: string) {
   const normalized = normalizeText(message);
-  if (!/\b(relatorio|gerencial|analise|indicadores|dashboard|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos|faturamento|receita|vendas)\b/.test(normalized)) {
+  if (!/\b(relatorio|gerencial|analise|indicadores|dashboard|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos|produto|produtos|vendido|vendidos|faturamento|receita|valor total|totalize|totalizar|vendas)\b/.test(normalized)) {
     return false;
   }
-  return /\b(venda|vendas|faturamento|receita|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos|top|periodo|hoje|semana|mes)\b/.test(normalized);
+  return /\b(venda|vendas|vendido|vendidos|faturamento|receita|valor total|totalize|totalizar|ranking|tendencia|evolucao|margem|lucro|rentabilidade|ruptura|estoque baixo|clientes ativos|produto mais vendido|produtos mais vendidos|top|periodo|hoje|semana|mes|30 dias|trinta dias)\b/.test(normalized);
 }
 
 function isVagueAnalyticsRequest(message: string) {
@@ -1291,6 +1437,11 @@ function inferManagerialReportKind(message: string): ManagerialReportKind {
 }
 
 function formatManagerialReportAnswer(report: ManagerialReport) {
+  const insight = report.insights[0] ? ` ${report.insights[0]}` : "";
+  return `${report.title}: ${report.summary}${insight}`;
+}
+
+function formatIntelligentReportAnswer(report: IntelligentReport) {
   const insight = report.insights[0] ? ` ${report.insights[0]}` : "";
   return `${report.title}: ${report.summary}${insight}`;
 }
@@ -1353,9 +1504,11 @@ function translateDateRange(dateRange: AnalyticsDateRange) {
     ? "hoje"
     : dateRange === "last_7_days"
       ? "ultimos 7 dias"
-      : dateRange === "month_to_date"
-        ? "mes atual"
-        : "todo o periodo";
+      : dateRange === "last_30_days"
+        ? "ultimos 30 dias"
+        : dateRange === "month_to_date"
+          ? "mes atual"
+          : "todo o periodo";
 }
 
 function inferMetric(message: string): AnalyticsMetric {
@@ -1388,6 +1541,9 @@ function inferDateRange(message: string): AnalyticsDateRange {
   if (normalized.includes("hoje")) {
     return "today";
   }
+  if (/\b(30 dias|trinta dias|ultimos 30|ultimos trinta)\b/.test(normalized)) {
+    return "last_30_days";
+  }
   if (normalized.includes("semana")) {
     return "last_7_days";
   }
@@ -1416,6 +1572,17 @@ function formatMoney(value: number) {
     style: "currency",
     currency: "BRL"
   }).format(value);
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function formatPercent(value: number) {
+  return `${new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: value % 1 === 0 ? 0 : 2,
+    maximumFractionDigits: 2
+  }).format(value)}%`;
 }
 
 function formatAnalyticsValue(metric: AnalyticsMetric, value: number) {

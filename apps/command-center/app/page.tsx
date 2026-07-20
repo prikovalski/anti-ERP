@@ -7,6 +7,7 @@ import type {
   ConceptInvoice,
   ConversationContext,
   ExecutionPlan,
+  IntelligentReport,
   ManagerialReport,
   SalesOrder,
   SalesOrderPreview
@@ -121,6 +122,7 @@ export default function CommandCenterPage() {
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
   const [analyticsResult, setAnalyticsResult] = useState<AnalyticsResult | null>(null);
   const [managerialReport, setManagerialReport] = useState<ManagerialReport | null>(null);
+  const [intelligentReport, setIntelligentReport] = useState<IntelligentReport | null>(null);
   const [executionPlan, setExecutionPlan] = useState<ExecutionPlan | null>(null);
   const [documentMessage, setDocumentMessage] = useState<DocumentMessage | null>(null);
   const [documentListBeforeDetail, setDocumentListBeforeDetail] = useState<DocumentMessage | null>(null);
@@ -166,6 +168,7 @@ export default function CommandCenterPage() {
     setInvoice(response.invoice ?? invoice);
     setAnalyticsResult(response.analyticsResult ?? null);
     setManagerialReport(response.managerialReport ?? null);
+    setIntelligentReport(response.intelligentReport ?? null);
     setExecutionPlan(response.executionPlan ?? null);
     setLastOrderId(response.lastOrderId ?? lastOrderId);
     setConversationContext(response.conversationContext ?? conversationContext);
@@ -197,6 +200,7 @@ export default function CommandCenterPage() {
     setInvoice(null);
     setAnalyticsResult(null);
     setManagerialReport(null);
+    setIntelligentReport(null);
     setExecutionPlan(null);
     setDocumentMessage(null);
     setDocumentListBeforeDetail(null);
@@ -306,6 +310,7 @@ export default function CommandCenterPage() {
       setPreview(null);
       setAnalyticsResult(null);
       setManagerialReport(null);
+      setIntelligentReport(null);
       setExecutionPlan(null);
       setDocumentMessage(null);
       setLastOrderId(payload.order?.id ?? payload.invoice?.salesOrderId ?? lastOrderId);
@@ -415,6 +420,7 @@ export default function CommandCenterPage() {
           documentMessage={documentMessage}
           executionPlan={executionPlan}
           invoice={invoice}
+          intelligentReport={intelligentReport}
           managerialReport={managerialReport}
           mcpTrace={mcpTrace}
           order={order}
@@ -438,6 +444,7 @@ function DocumentWorkspace({
   documentMessage,
   executionPlan,
   invoice,
+  intelligentReport,
   managerialReport,
   mcpTrace,
   order,
@@ -455,6 +462,7 @@ function DocumentWorkspace({
   documentMessage: DocumentMessage | null;
   executionPlan: ExecutionPlan | null;
   invoice: ConceptInvoice | null;
+  intelligentReport: IntelligentReport | null;
   managerialReport: ManagerialReport | null;
   mcpTrace: McpTrace;
   order: SalesOrder | null;
@@ -465,8 +473,8 @@ function DocumentWorkspace({
   onConfirmPreview: () => void;
   onOpenDocumentDetail: (type: "order" | "invoice", id: string) => void;
 }) {
-  const hasDocument = Boolean(preview || order || invoice || analyticsResult || managerialReport || executionPlan || documentMessage);
-  const showGenericDocument = Boolean(documentMessage && !preview && !order && !invoice && !analyticsResult && !managerialReport && !executionPlan);
+  const hasDocument = Boolean(preview || order || invoice || analyticsResult || managerialReport || intelligentReport || executionPlan || documentMessage);
+  const showGenericDocument = Boolean(documentMessage && !preview && !order && !invoice && !analyticsResult && !managerialReport && !intelligentReport && !executionPlan);
 
   return (
     <div className="document-scroll">
@@ -486,6 +494,7 @@ function DocumentWorkspace({
       ) : null}
       {order ? <ConfirmedOrderDocument invoice={invoice} order={order} onBackToList={onBackToList} /> : null}
       {!order && invoice ? <InvoiceDetailDocument invoice={invoice} onBackToList={onBackToList} /> : null}
+      {intelligentReport ? <IntelligentReportDocument report={intelligentReport} /> : null}
       {managerialReport ? <ManagerialReportDocument report={managerialReport} /> : null}
       {analyticsResult ? <ReportDocument result={analyticsResult} /> : null}
       <OperationalFooter audit={audit} conversationContext={conversationContext} trace={mcpTrace} />
@@ -757,13 +766,14 @@ function ConfirmedOrderDocument({
         <Metric label="Criado em" value={formatDate(order.createdAt)} />
       </div>
       <LinesTable lines={order.lines} />
+      <DiscountSummary order={order} />
       <div className="document-total compact">
         <div>
           <span>Total</span>
           <strong>{money(order.subtotal)}</strong>
         </div>
       </div>
-      {invoice ? <InvoiceDocument invoice={invoice} /> : null}
+      {invoice ? <InvoiceDocument invoice={invoice} sourceOrder={order} /> : null}
     </article>
   );
 }
@@ -788,7 +798,7 @@ function InvoiceDetailDocument({
   );
 }
 
-function InvoiceDocument({ invoice }: { invoice: ConceptInvoice }) {
+function InvoiceDocument({ invoice, sourceOrder }: { invoice: ConceptInvoice; sourceOrder?: SalesOrder | null }) {
   return (
     <div className="invoice-card">
       <DocumentTitle
@@ -808,27 +818,41 @@ function InvoiceDocument({ invoice }: { invoice: ConceptInvoice }) {
           <strong>{money(invoice.amount)}</strong>
         </div>
       </div>
+      {sourceOrder ? <DiscountSummary order={sourceOrder} compact /> : null}
       <p className="fine-print">{invoice.disclaimer}</p>
     </div>
   );
 }
 
 function ReportDocument({ result }: { result: AnalyticsResult }) {
-  const filters = result.query.filters.length
-    ? result.query.filters.map((filter) => `${filter.label}: ${filter.value}`).join(" | ")
-    : "sem filtros";
+  const [exportingPdf, setExportingPdf] = useState(false);
   const rows = result.rows.length
     ? result.rows
     : [{ label: "Sem dados detalhados", value: 0 }];
 
+  async function downloadPdf() {
+    setExportingPdf(true);
+    try {
+      await downloadReportPdf(toIntelligentReportFromAnalytics(result));
+    } finally {
+      setExportingPdf(false);
+    }
+  }
+
   return (
     <article className="document-card spreadsheet-report">
-      <DocumentTitle
-        icon={<UiIcon label="BI" size={20} />}
-        kicker="Relatorio"
-        title={result.label}
-        status={result.query.dataSource}
-      />
+      <div className="report-header">
+        <DocumentTitle
+          icon={<UiIcon label="BI" size={20} />}
+          kicker="Relatorio"
+          title={formatReportTitle(result.label)}
+        />
+
+        <button type="button" className="secondary-action report-pdf-action" disabled={exportingPdf} onClick={downloadPdf}>
+          <UiIcon label="PDF" size={13} />
+          {exportingPdf ? "Gerando..." : "Gerar PDF"}
+        </button>
+      </div>
 
       <div className="spreadsheet-toolbar">
         <div>
@@ -837,19 +861,12 @@ function ReportDocument({ result }: { result: AnalyticsResult }) {
         </div>
         <div>
           <span>Agrupamento</span>
-          <strong>{result.query.groupBy ?? "sem agrupamento"}</strong>
+          <strong>{formatAnalyticsGroupBy(result.query.groupBy)}</strong>
         </div>
         <div>
           <span>Periodo</span>
-          <strong>{result.query.dateRange}</strong>
+          <strong>{formatReportPeriod(result.query.dateRange)}</strong>
         </div>
-      </div>
-
-      <div className="spreadsheet-meta">
-        <span>Fonte: {result.query.dataSource}</span>
-        <span>Capacidade: {result.query.capability}</span>
-        <span>Filtros: {filters}</span>
-        <span>Entidades: {result.query.entities.join(", ")}</span>
       </div>
 
       <div className="spreadsheet-shell" role="table" aria-label={result.label}>
@@ -863,40 +880,52 @@ function ReportDocument({ result }: { result: AnalyticsResult }) {
           <div key={`${row.label}-${index}`} className="spreadsheet-row" role="row">
             <span role="cell">{index + 1}</span>
             <span role="cell">{row.label}</span>
-            <span role="cell">{result.metric}</span>
+            <span role="cell">{formatMetricLabel(result.metric)}</span>
             <strong role="cell">{result.rows.length ? formatAnalyticsValue(result, row.value) : "-"}</strong>
           </div>
         ))}
         <div className="spreadsheet-row spreadsheet-total" role="row">
           <span role="cell" />
           <span role="cell">Total</span>
-          <span role="cell">{result.metric}</span>
+          <span role="cell">{formatMetricLabel(result.metric)}</span>
           <strong role="cell">{formatAnalyticsValue(result)}</strong>
         </div>
       </div>
 
       <div className="spreadsheet-footnote">
         <span>{result.rows.length} linha(s)</span>
-        <span>Atualizado em tempo real pelo MCP Analytics</span>
       </div>
     </article>
   );
 }
 
 function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
+  const [exportingPdf, setExportingPdf] = useState(false);
   const rows = report.rows;
-  const filters = report.query.filters.length
-    ? report.query.filters.map((filter) => `${filter.label}: ${filter.value}`).join(" | ")
-    : "sem filtros";
+
+  async function downloadPdf() {
+    setExportingPdf(true);
+    try {
+      await downloadReportPdf(toIntelligentReportFromManagerial(report));
+    } finally {
+      setExportingPdf(false);
+    }
+  }
 
   return (
     <article className="document-card spreadsheet-report">
-      <DocumentTitle
-        icon={<UiIcon label="BI" size={20} />}
-        kicker="Relatorio gerencial"
-        title={report.title}
-        status={report.dataSource}
-      />
+      <div className="report-header">
+        <DocumentTitle
+          icon={<UiIcon label="BI" size={20} />}
+          kicker="Relatorio gerencial"
+          title={report.title}
+        />
+
+        <button type="button" className="secondary-action report-pdf-action" disabled={exportingPdf} onClick={downloadPdf}>
+          <UiIcon label="PDF" size={13} />
+          {exportingPdf ? "Gerando..." : "Gerar PDF"}
+        </button>
+      </div>
 
       <div className="spreadsheet-toolbar">
         <div>
@@ -905,7 +934,7 @@ function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
         </div>
         <div>
           <span>Periodo</span>
-          <strong>{report.dateRange}</strong>
+          <strong>{formatReportPeriod(report.dateRange)}</strong>
         </div>
         <div>
           <span>Linhas</span>
@@ -920,13 +949,6 @@ function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
           ))}
         </div>
       ) : null}
-
-      <div className="spreadsheet-meta">
-        <span>Fonte: {report.dataSource}</span>
-        <span>Capacidade: {report.query.capability}</span>
-        <span>Filtros: {filters}</span>
-        <span>Entidades: {report.query.entities.join(", ")}</span>
-      </div>
 
       <div className="result-table-shell" role="table" aria-label={report.title}>
         <div
@@ -946,7 +968,7 @@ function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
             style={{ gridTemplateColumns: buildResultTableColumns(report.columns.length) }}
           >
             {report.columns.map((column) => (
-              <span key={`${rowIndex}-${column}`} role="cell">{formatReportCell(row[column])}</span>
+              <span key={`${rowIndex}-${column}`} role="cell">{formatReportCell(row[column], column)}</span>
             ))}
           </div>
         ))}
@@ -955,13 +977,315 @@ function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
   );
 }
 
+function IntelligentReportDocument({ report }: { report: IntelligentReport }) {
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const filters = report.plan.filters.length
+    ? report.plan.filters.map((filter) => `${filter.label}: ${filter.value}`).join(" | ")
+    : "sem filtros";
+
+  async function downloadPdf() {
+    setExportingPdf(true);
+    try {
+      const response = await fetch("/api/reports/intelligent/pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ report })
+      });
+      if (!response.ok) {
+        throw new Error("PDF generation failed");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = buildReportFilename(report);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExportingPdf(false);
+    }
+  }
+
+  return (
+    <article className="document-card spreadsheet-report">
+      <div className="report-header">
+        <DocumentTitle
+          icon={<UiIcon label="BI" size={20} />}
+          kicker="Relatorio inteligente"
+          title={report.title}
+          status={report.dataSource}
+        />
+
+        <button type="button" className="secondary-action report-pdf-action" disabled={exportingPdf} onClick={downloadPdf}>
+          <UiIcon label="PDF" size={13} />
+          {exportingPdf ? "Gerando..." : "Gerar PDF"}
+        </button>
+      </div>
+
+      <div className="report-summary">
+        <span>Resumo executivo</span>
+        <p>{report.summary}</p>
+      </div>
+
+      <div className="report-kpis">
+        <div>
+          <span>Periodo</span>
+          <strong>{formatReportDateRange(report.plan.dateRange)}</strong>
+        </div>
+        <div>
+          <span>Granularidade</span>
+          <strong>{formatReportGrain(report.plan.grain)}</strong>
+        </div>
+        <div>
+          <span>Linhas</span>
+          <strong>{report.rows.length}</strong>
+        </div>
+        <div>
+          <span>Indicador</span>
+          <strong>{report.plan.metric}</strong>
+        </div>
+      </div>
+
+      <div className="report-insights">
+        {report.executiveSummary.map((item, index) => (
+          <span key={`executive-${index}`}>{item}</span>
+        ))}
+        {[...report.insights, ...report.recommendations].map((item, index) => (
+          <span key={`insight-${index}`}>{item}</span>
+        ))}
+      </div>
+
+      <div className="report-context">
+        <span>Filtros: {filters}</span>
+        <span>Entidades: {report.plan.entities.join(", ")}</span>
+      </div>
+
+      {report.rows.length ? (
+        <div className="report-table-block">
+          <h3>Dados detalhados</h3>
+          <div className="result-table-shell report-result-table" role="table" aria-label={report.title}>
+            <div
+              className="result-table-row result-table-head"
+              role="row"
+              style={{ gridTemplateColumns: buildResultTableColumns(report.columns) }}
+            >
+              {report.columns.map((column) => (
+                <span key={column} role="columnheader">{formatColumnLabel(column)}</span>
+              ))}
+            </div>
+            {report.rows.map((row, rowIndex) => (
+              <div
+                key={`intelligent-report-${rowIndex}`}
+                className="result-table-row"
+                role="row"
+                style={{ gridTemplateColumns: buildResultTableColumns(report.columns) }}
+              >
+                {report.columns.map((column) => (
+                  <span key={`${rowIndex}-${column}`} role="cell">{formatReportCell(row[column], column)}</span>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {report.sql ? (
+        <details className="sql-disclosure">
+          <summary>Consulta SQL somente leitura</summary>
+          <pre>{report.sql}</pre>
+        </details>
+      ) : null}
+    </article>
+  );
+}
+
+function buildReportFilename(report: IntelligentReport) {
+  const slug = report.title
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 72);
+
+  return `${slug || "relatorio-gerencial"}-${report.generatedAt.slice(0, 10)}.pdf`;
+}
+
+async function downloadReportPdf(report: IntelligentReport) {
+  const response = await fetch("/api/reports/intelligent/pdf", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ report })
+  });
+  if (!response.ok) {
+    throw new Error("PDF generation failed");
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = buildReportFilename(report);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function toIntelligentReportFromAnalytics(result: AnalyticsResult): IntelligentReport {
+  const columns = ["descricao", "metrica", "valor"];
+  const rows = result.rows.map((row) => ({
+    descricao: row.label,
+    metrica: formatMetricLabel(result.metric),
+    valor: row.value
+  }));
+  const title = formatReportTitle(result.label);
+
+  return {
+    title,
+    summary: `${title} com valor consolidado de ${formatAnalyticsValue(result)}.`,
+    executiveSummary: [
+      `O relatorio consolidou ${result.rows.length} linha(s) no periodo ${formatReportPeriod(result.query.dateRange)}.`,
+      result.rows[0] ? `${result.rows[0].label} aparece como principal destaque.` : "Nao ha linhas detalhadas para o periodo."
+    ],
+    sql: "",
+    columns,
+    rows,
+    insights: [],
+    recommendations: [],
+    plan: {
+      question: result.label,
+      title,
+      metric: formatMetricLabel(result.metric),
+      grain: result.query.groupBy === "customer" ? "customer" : result.query.groupBy === "product" ? "product" : "summary",
+      dateRange: result.query.dateRange,
+      entities: result.query.entities,
+      filters: result.query.filters,
+      needsClarification: false,
+      clarificationQuestion: null,
+      charts: [{ type: "bar", title, xKey: "descricao", yKey: "valor" }]
+    },
+    dataSource: result.query.dataSource === "postgres" ? "postgres" : "demo-memory",
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function toIntelligentReportFromManagerial(report: ManagerialReport): IntelligentReport {
+  return {
+    title: report.title,
+    summary: report.summary,
+    executiveSummary: report.insights.length ? report.insights : [report.summary],
+    sql: "",
+    columns: report.columns,
+    rows: report.rows,
+    insights: report.insights,
+    recommendations: [],
+    plan: {
+      question: report.title,
+      title: report.title,
+      metric: report.kind,
+      grain: "summary",
+      dateRange: report.dateRange,
+      entities: report.query.entities,
+      filters: report.query.filters,
+      needsClarification: false,
+      clarificationQuestion: null,
+      charts: [{ type: "table", title: report.title, xKey: null, yKey: null }]
+    },
+    dataSource: report.dataSource === "postgres" ? "postgres" : "demo-memory",
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function formatReportTitle(value: string) {
+  return value
+    .replace(/units sold/gi, "Unidades vendidas")
+    .replace(/sales month to date/gi, "no mes atual")
+    .replace(/month to date/gi, "mes atual")
+    .replace(/\bfor no mes atual\b/gi, "no mes atual")
+    .replace(/\bfor\b/gi, "por")
+    .replace(/_/g, " ")
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function formatMetricLabel(value: string) {
+  const labels: Record<string, string> = {
+    units_sold: "Unidades vendidas",
+    revenue: "Faturamento",
+    orders: "Pedidos"
+  };
+  return labels[value] ?? value.replace(/_/g, " ");
+}
+
+function formatAnalyticsGroupBy(value: AnalyticsResult["query"]["groupBy"]) {
+  if (value === "product") return "Produto";
+  if (value === "customer") return "Cliente";
+  if (value === "day") return "Dia";
+  return "Sem agrupamento";
+}
+
+function formatReportPeriod(value: AnalyticsResult["query"]["dateRange"]) {
+  const now = new Date();
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (value === "today") {
+    return formatDateOnly(end);
+  }
+  if (value === "last_7_days") {
+    const start = new Date(end);
+    start.setDate(end.getDate() - 6);
+    return `${formatDateOnly(start)} a ${formatDateOnly(end)}`;
+  }
+  if (value === "last_30_days") {
+    const start = new Date(end);
+    start.setDate(end.getDate() - 29);
+    return `${formatDateOnly(start)} a ${formatDateOnly(end)}`;
+  }
+  if (value === "month_to_date") {
+    const start = new Date(end.getFullYear(), end.getMonth(), 1);
+    return `${formatDateOnly(start)} a ${formatDateOnly(end)}`;
+  }
+  return "Todo o historico";
+}
+
+function formatDateOnly(value: Date) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  }).format(value);
+}
+
+function formatReportDateRange(value: IntelligentReport["plan"]["dateRange"]) {
+  const labels: Record<IntelligentReport["plan"]["dateRange"], string> = {
+    today: "Hoje",
+    last_7_days: "Ultimos 7 dias",
+    last_30_days: "Ultimos 30 dias",
+    month_to_date: "Mes atual",
+    all_time: "Todo o historico"
+  };
+  return labels[value];
+}
+
+function formatReportGrain(value: IntelligentReport["plan"]["grain"]) {
+  const labels: Record<IntelligentReport["plan"]["grain"], string> = {
+    summary: "Resumo",
+    day: "Dia",
+    customer: "Cliente",
+    product: "Produto",
+    invoice: "Nota fiscal",
+    order: "Pedido"
+  };
+  return labels[value];
+}
+
 function formatColumnLabel(value: string) {
   return value
     .replace(/([A-Z])/g, " $1")
     .replace(/^./, (letter) => letter.toUpperCase());
 }
 
-function formatReportCell(value: string | number | boolean | null | undefined) {
+function formatReportCell(value: string | number | boolean | null | undefined, column?: string) {
   if (value === null || value === undefined || value === "") {
     return "-";
   }
@@ -969,9 +1293,40 @@ function formatReportCell(value: string | number | boolean | null | undefined) {
     return value ? "Sim" : "Nao";
   }
   if (typeof value === "number") {
+    if (column && /faturamento|valor|preco|margem|receita/i.test(column)) {
+      return money(value);
+    }
     return Number.isInteger(value) ? String(value) : money(value);
   }
   return value;
+}
+
+function DiscountSummary({ order, compact = false }: { order: SalesOrder; compact?: boolean }) {
+  const originalSubtotal = calculateOriginalSubtotal(order);
+  const discount = Math.max(0, originalSubtotal - order.subtotal);
+  if (discount <= 0.004) {
+    return null;
+  }
+  const percentage = originalSubtotal > 0 ? (discount / originalSubtotal) * 100 : 0;
+
+  return (
+    <div className={`discount-summary ${compact ? "compact" : ""}`}>
+      <div>
+        <span>Subtotal original sem desconto</span>
+        <strong>{money(originalSubtotal)}</strong>
+      </div>
+      <div>
+        <span>Desconto acumulado sobre o subtotal original</span>
+        <strong>{money(discount)}</strong>
+        <small>{formatPercent(percentage)}</small>
+      </div>
+      <div>
+        <span>Total liquido com desconto</span>
+        <strong>{money(order.subtotal)}</strong>
+      </div>
+      <p>O desconto acumulado e a diferenca entre o subtotal original e o total liquido atual do pedido.</p>
+    </div>
+  );
 }
 
 function LinesTable({ lines }: { lines: SalesOrderPreview["lines"] }) {
@@ -981,7 +1336,7 @@ function LinesTable({ lines }: { lines: SalesOrderPreview["lines"] }) {
         <span>Item</span>
         <span>Qtd.</span>
         <span>Unitario</span>
-        <span>Total</span>
+        <span>Total liquido</span>
       </div>
       {lines.map((line, index) => (
         <div key={`${line.productId}-${line.quantity}-${index}`} className="lines-row">
@@ -998,6 +1353,21 @@ function LinesTable({ lines }: { lines: SalesOrderPreview["lines"] }) {
   );
 }
 
+function calculateOriginalSubtotal(order: SalesOrder) {
+  return roundMoney(order.lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0));
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function formatPercent(value: number) {
+  return `${new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: value % 1 === 0 ? 0 : 2,
+    maximumFractionDigits: 2
+  }).format(value)}%`;
+}
+
 function DocumentTitle({
   icon,
   kicker,
@@ -1006,7 +1376,7 @@ function DocumentTitle({
 }: {
   icon: React.ReactNode;
   kicker: string;
-  status: string;
+  status?: string;
   title: string;
 }) {
   return (
@@ -1016,7 +1386,7 @@ function DocumentTitle({
         <p>{kicker}</p>
         <h3>{title}</h3>
       </div>
-      <span>{status}</span>
+      {status ? <span>{status}</span> : null}
     </div>
   );
 }
@@ -1114,6 +1484,9 @@ function inferDocumentTitle(response: AgentResponse) {
   if (firstAuditAction.includes("list_low_stock") || text.includes("estoque baixo")) {
     return "Diagnostico de estoque";
   }
+  if (firstAuditAction.includes("list_inventory_position") || text.startsWith("estoque atual")) {
+    return "Estoque atual";
+  }
   if (firstAuditAction.includes("list_inventory_movements") || text.includes("historico de estoque")) {
     return "Historico de estoque";
   }
@@ -1143,7 +1516,7 @@ function mentionsInvoice(text: string) {
 }
 
 function getResultSummary(text: string) {
-  const [summary] = text.split(":");
+  const [summary] = text.split(/[:\n]/);
   return summary?.trim() || text;
 }
 
@@ -1173,6 +1546,9 @@ function parseResultTable(document: DocumentMessage): ResultTable | null {
   }
   if (document.title === "Diagnostico de estoque") {
     return parseLowStockProductList(document.text);
+  }
+  if (document.title === "Estoque atual") {
+    return parseInventoryPositionList(document.text);
   }
   if (document.title === "Lista de notas fiscais") {
     return parseInvoiceList(document.text);
@@ -1394,6 +1770,30 @@ function parseInventoryMovementList(text: string): ResultTable | null {
   };
 }
 
+function parseInventoryPositionList(text: string): ResultTable | null {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const dataLines = lines.filter((line) =>
+    line.includes("|")
+    && !/^produto\s*\|\s*quantidade\s+disponivel$/i.test(line)
+  );
+  const rows = dataLines
+    .map((line) => line.split("|").map((part) => part.trim()))
+    .filter((parts) => parts.length >= 2 && parts[0] && parts[1])
+    .map((parts) => [parts[0] ?? "-", parts[1] ?? "-"]);
+
+  if (!rows.length) {
+    return null;
+  }
+  return {
+    title: "Estoque atual",
+    columns: ["Produto", "Quantidade disponivel"],
+    rows
+  };
+}
+
 function extractSemicolonItems(text: string) {
   const listSegment = text.includes(":") ? text.slice(text.indexOf(":") + 1) : "";
   return listSegment
@@ -1404,11 +1804,20 @@ function extractSemicolonItems(text: string) {
 }
 
 function buildResultTableColumns(columns: number | string[]) {
+  if (Array.isArray(columns) && columns.join("|") === "produto|quantidade|faturamento|pedidos") {
+    return "minmax(260px, 1fr) 130px 170px 120px";
+  }
+  if (Array.isArray(columns) && columns.join("|") === "cliente|pedidos|faturamento|ultimo_pedido") {
+    return "minmax(260px, 1fr) 120px 170px 150px";
+  }
   if (Array.isArray(columns) && columns.join("|") === "Pedido|Criado em|Cliente|Status|Itens|Total") {
     return "130px 130px minmax(220px, 1fr) 120px 100px 150px";
   }
   if (Array.isArray(columns) && columns.join("|") === "NF|Emissao|Pedido|Cliente|Status|Valor|Situacao") {
     return "120px 130px 120px minmax(220px, 1fr) 120px 150px 210px";
+  }
+  if (Array.isArray(columns) && columns.join("|") === "Produto|Quantidade disponivel") {
+    return "minmax(260px, 1fr) 170px";
   }
 
   const count = Array.isArray(columns) ? columns.length : columns;

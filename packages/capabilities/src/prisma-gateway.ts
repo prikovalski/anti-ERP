@@ -2,6 +2,7 @@ import {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  IntelligentReport,
   InventoryMovement,
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
@@ -19,6 +20,7 @@ import {
   demoProducts
 } from "@anti-erp/shared";
 import { Prisma, PrismaClient } from "@prisma/client";
+import { queryIntelligentReportFromSql } from "./intelligent-report";
 import type { CapabilityGateway } from "./types";
 
 type PrismaTransaction = Omit<
@@ -303,7 +305,7 @@ function mapRawSalesOrderRows(rows: RawSalesOrderRow[]): SalesOrder[] {
 }
 
 async function fetchSalesOrdersRaw(input: ListSalesOrdersInput & { salesOrderId?: string | null } = {}) {
-  const range = resolveDateRange(input.dateRange ?? "all_time");
+  const range = resolveExplicitDateRange(input.dateFrom, input.dateTo) ?? resolveDateRange(input.dateRange ?? "all_time");
   const conditions: string[] = [];
   const params: unknown[] = [];
   if (input.salesOrderId) {
@@ -1317,7 +1319,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
-      if (existingOrder.status === "canceled") {
+      if (String(existingOrder.status) === "canceled") {
         throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
       }
       const product = (await tx.product.findUniqueOrThrow({
@@ -1401,7 +1403,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
-      if (existingOrder.status === "canceled") {
+      if (String(existingOrder.status) === "canceled") {
         throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
       }
       const currentLine = existingOrder.lines.find((line) => line.productId === input.productId);
@@ -1496,7 +1498,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
-      if (existingOrder.status === "canceled") {
+      if (String(existingOrder.status) === "canceled") {
         throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
       }
       const currentLine = existingOrder.lines.find((line) => line.productId === input.productId);
@@ -1560,7 +1562,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
-      if (existingOrder.status === "canceled") {
+      if (String(existingOrder.status) === "canceled") {
         throw new Error(`Sales order ${input.salesOrderId} is canceled and cannot be changed.`);
       }
 
@@ -1631,7 +1633,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     if (!currentOrder) {
       throw new Error(`Sales order ${input.salesOrderId} not found.`);
     }
-    if (currentOrder.status === "canceled") {
+    if (String(currentOrder.status) === "canceled") {
       await audit("cancel_sales_order", `Sales order ${currentOrder.id} was already canceled`, {
         salesOrderId: currentOrder.id
       });
@@ -1651,7 +1653,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
         }
       });
 
-      if (existingOrder.status !== "canceled") {
+      if (String(existingOrder.status) !== "canceled") {
         const existingWriteOffs = await tx.$queryRawUnsafe<Array<{ count: bigint }>>(
           'SELECT COUNT(*)::bigint AS count FROM "InventoryMovement" WHERE "salesOrderId" = $1 AND type = $2',
           existingOrder.id,
@@ -1991,7 +1993,7 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     productQuery?: string | null;
     productQueries?: string[] | null;
     customerQuery?: string | null;
-    dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+    dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
     groupBy?: "product" | "customer" | "day" | null;
   }) {
     await ensureSeeded();
@@ -2105,9 +2107,51 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     });
     return report;
   }
+
+  async queryIntelligentReport(input: { question: string }): Promise<IntelligentReport> {
+    await ensureSeeded();
+    return queryIntelligentReportFromSql({
+      question: input.question,
+      dataSource: "postgres",
+      runQuery: async (sql) => {
+        const rows = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(sql);
+        return rows.map(normalizeIntelligentReportRow);
+      }
+    });
+  }
 }
 
-function resolveDateRange(dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
+function normalizeIntelligentReportRow(row: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(row).map(([key, value]) => {
+      if (value instanceof Date) {
+        return [key, value.toISOString()];
+      }
+      if (typeof value === "bigint") {
+        return [key, Number(value)];
+      }
+      if (value && typeof value === "object" && "toNumber" in value && typeof value.toNumber === "function") {
+        return [key, value.toNumber()];
+      }
+      if (value === undefined) {
+        return [key, null];
+      }
+      return [key, value as string | number | boolean | null];
+    })
+  );
+}
+
+function resolveExplicitDateRange(dateFrom?: string | null, dateTo?: string | null) {
+  if (!dateFrom && !dateTo) {
+    return null;
+  }
+  const start = dateFrom ? new Date(`${dateFrom}T00:00:00.000`) : new Date(0);
+  const end = dateTo ? new Date(`${dateTo}T00:00:00.000`) : new Date();
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
+
+function resolveDateRange(dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time") {
   if (dateRange === "all_time") {
     return null;
   }
@@ -2119,6 +2163,9 @@ function resolveDateRange(dateRange: "today" | "last_7_days" | "month_to_date" |
   }
   if (dateRange === "last_7_days") {
     start.setDate(start.getDate() - 7);
+  }
+  if (dateRange === "last_30_days") {
+    start.setDate(start.getDate() - 30);
   }
   if (dateRange === "month_to_date") {
     start.setDate(1);
@@ -2141,7 +2188,7 @@ function buildAnalyticsQuery(input: {
   productQuery?: string | null;
   productQueries?: string[] | null;
   customerQuery?: string | null;
-  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
   groupBy?: "product" | "customer" | "day" | null;
   dataSource: "postgres";
 }) {
@@ -2237,7 +2284,7 @@ function inferManagerialReportKind(question: string): ManagerialReportKind {
 
 function buildManagerialReport(input: {
   kind: ManagerialReportKind;
-  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
   take: number;
   orders: SalesOrder[];
   products: Product[];
@@ -2376,7 +2423,7 @@ function managerialReport(input: {
   kind: ManagerialReportKind;
   title: string;
   summary: string;
-  dateRange: "today" | "last_7_days" | "month_to_date" | "all_time";
+  dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
   dataSource: "demo-memory" | "postgres";
   columns: string[];
   rows: Array<Record<string, string | number | boolean | null>>;
@@ -2430,6 +2477,6 @@ function formatReportMoney(value: number) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 }
 
-function translateReportDateRange(dateRange: "today" | "last_7_days" | "month_to_date" | "all_time") {
-  return dateRange === "today" ? "hoje" : dateRange === "last_7_days" ? "ultimos 7 dias" : dateRange === "month_to_date" ? "mes atual" : "todo o periodo";
+function translateReportDateRange(dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time") {
+  return dateRange === "today" ? "hoje" : dateRange === "last_7_days" ? "ultimos 7 dias" : dateRange === "last_30_days" ? "ultimos 30 dias" : dateRange === "month_to_date" ? "mes atual" : "todo o periodo";
 }

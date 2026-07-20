@@ -67,11 +67,13 @@ test("evolveContextFromPreviewConfirmation stores confirmed order and invoice", 
     },
     invoice: {
       id: "CI-5001",
+      status: "issued",
       salesOrderId: "SO-1001",
       customerName: "Northstar Labs",
       amount: 1950,
       issuedAt: "2026-07-14T12:00:00.000Z",
-      disclaimer: "Concept invoice."
+      disclaimer: "Concept invoice.",
+      orderChangedAfterIssue: false
     },
     message: {
       id: "msg_2",

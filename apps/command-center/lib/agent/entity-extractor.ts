@@ -164,6 +164,9 @@ export function extractAnalytics(message: string): ExtractedAnalytics {
 }
 
 export function inferDateRange(normalized: string): AnalyticsDateRange {
+  if (/\b(ultimos?\s+30|trinta\s+dias|30\s+dias)\b/.test(normalized)) {
+    return "last_30_days";
+  }
   if (/\b(ultimos?\s+7|sete\s+dias|semana)\b/.test(normalized)) {
     return "last_7_days";
   }

@@ -169,6 +169,16 @@ test("parseIntentLocally parses product comparison", () => {
   assert.deepEqual(intent.analytics?.productQueries, ["monitor", "notebook"]);
 });
 
+test("parseIntentLocally parses product revenue for the last 30 days", () => {
+  const intent = parseIntentLocally("quais produtos foram vendidos nos ultimos 30 dias, totalize por produto e mostre o valor total faturado de cada produto");
+
+  assert.equal(intent.intent, "analytics_query");
+  assert.equal(intent.productQuery, null);
+  assert.equal(intent.analytics?.metric, "revenue");
+  assert.equal(intent.analytics?.groupBy, "product");
+  assert.equal(intent.analytics?.dateRange, "last_30_days");
+});
+
 test("parseIntentLocally parses inventory diagnostics before generic analytics", () => {
   const intent = parseIntentLocally("Quais produtos estão com estoque baixo?");
 

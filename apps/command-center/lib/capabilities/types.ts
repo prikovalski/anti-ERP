@@ -5,6 +5,7 @@ import type {
   AnalyticsResult,
   ConceptInvoice,
   Customer,
+  IntelligentReport,
   InventoryMovement,
   ListConceptInvoicesInput,
   ListInventoryMovementsInput,
@@ -94,6 +95,12 @@ export interface CapabilityGateway {
     salesOrderId: string;
     productId: string;
   }): Promise<SalesOrder>;
+  applySalesOrderDiscount(input: {
+    salesOrderId: string;
+    productId?: string | null;
+    discountType: "percent" | "amount";
+    value: number;
+  }): Promise<SalesOrder>;
   cancelSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
   duplicateSalesOrder(input: { salesOrderId: string }): Promise<SalesOrder>;
   createConceptInvoice(input: { salesOrderId: string }): Promise<ConceptInvoice>;
@@ -117,4 +124,5 @@ export interface CapabilityGateway {
     groupBy?: AnalyticsGroupBy | null;
   }): Promise<AnalyticsResult>;
   queryManagerialReport(input: QueryManagerialReportInput): Promise<ManagerialReport>;
+  queryIntelligentReport(input: { question: string }): Promise<IntelligentReport>;
 }

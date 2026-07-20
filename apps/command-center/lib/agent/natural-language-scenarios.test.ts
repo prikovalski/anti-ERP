@@ -155,17 +155,35 @@ test("direct agent executes natural inventory and managerial report commands wit
   assert.match(entry.message.text, /entrada/i);
   assert.match(entry.message.text, /quantidade 7/i);
 
+  await runDirectAgent({ message: "cadastre o produto mouse qa 1200" });
+  const itemQuantityEntry = await runDirectAgent({ message: "adicione 10 quantidades ao item mouse qa 1200" });
+  assert.match(itemQuantityEntry.message.text, /entrada/i);
+  assert.match(itemQuantityEntry.message.text, /Mouse qa 1200|mouse qa 1200/i);
+  assert.match(itemQuantityEntry.message.text, /quantidade 10/i);
+
   const history = await runDirectAgent({ message: `historico de estoque do produto ${productName}` });
   assert.match(history.message.text, /Historico de estoque/i);
   assert.match(history.message.text, new RegExp(productName, "i"));
 
+  const stockPosition = await runDirectAgent({ message: "liste o estoque" });
+  assert.match(stockPosition.message.text, /Estoque atual/i);
+  assert.match(stockPosition.message.text, /Produto \| Quantidade disponivel/i);
+  assert.doesNotMatch(stockPosition.message.text, /Historico de estoque/i);
+
   const margin = await runDirectAgent({ message: "gere um relatório de margem do mês" });
-  assert.equal(margin.managerialReport?.kind, "margin");
-  assert.match(margin.message.text, /Margem estimada/i);
+  assert.equal(margin.intelligentReport?.plan.metric, "sales");
+  assert.match(margin.message.text, /Relatorio|Vendas|Margem|gerencial/i);
 
   const stockout = await runDirectAgent({ message: "mostre o risco de ruptura de estoque" });
-  assert.equal(stockout.managerialReport?.kind, "stockout_risk");
-  assert.match(stockout.message.text, /Ruptura de estoque/i);
+  assert.equal(stockout.intelligentReport?.plan.metric, "stock");
+  assert.match(stockout.message.text, /estoque/i);
+
+  const productRevenue = await runDirectAgent({
+    message: "quais produtos foram vendidos nos ultimos 30 dias, totalize por produto e mostre o valor total faturado de cada produto"
+  });
+  assert.equal(productRevenue.intelligentReport?.plan.dateRange, "last_30_days");
+  assert.equal(productRevenue.intelligentReport?.plan.grain, "product");
+  assert.deepEqual(productRevenue.intelligentReport?.columns, ["produto", "quantidade", "faturamento", "pedidos"]);
 });
 
 test("direct agent asks clarifying questions for incomplete informal commands", async () => {
@@ -200,6 +218,20 @@ test("direct agent applies discounts to the whole order or a specific item", asy
 
   assert.equal(wholeDiscount.order?.subtotal, wholeOrderSubtotal * 0.9);
   assert.match(wholeDiscount.message.text, /desconto de 10% no pedido todo/i);
+
+  const blockedSecondDiscount = await runDirectAgent({
+    message: "aplique 10% de desconto no pedido",
+    lastOrderId: wholeOrder.id
+  });
+  assert.match(blockedSecondDiscount.message.text, /ja possui desconto acumulado/i);
+  assert.match(blockedSecondDiscount.message.text, /confirma aplicar um novo desconto/i);
+  assert.equal(blockedSecondDiscount.order?.subtotal, wholeOrderSubtotal * 0.9);
+
+  const confirmedSecondDiscount = await runDirectAgent({
+    message: "confirmo aplicar 10% de desconto no pedido",
+    lastOrderId: wholeOrder.id
+  });
+  assert.equal(confirmedSecondDiscount.order?.subtotal, wholeOrderSubtotal * 0.81);
 
   const itemPreview = await demoCapabilityGateway.prepareSalesOrder({
     customerId: customer.id,
@@ -246,4 +278,17 @@ test("direct agent filters listed orders by customer name after 'pedidos de'", a
   assert.match(response.message.text, new RegExp(joaoOrder.id));
   assert.doesNotMatch(response.message.text, new RegExp(northstarOrder.id));
   assert.match(response.message.text, new RegExp(`cliente Joao Silva ${suffix}`, "i"));
+});
+
+test("direct agent applies natural date filters when listing orders", async () => {
+  const unavailableDay = await runDirectAgent({ message: "liste os pedidos do dia 01/01/2020" });
+  const lastWeek = await runDirectAgent({ message: "exiba os pedidos da ultima semana" });
+  const previousWeek = await runDirectAgent({ message: "liste os pedidos da semana passada" });
+  const lastMonth = await runDirectAgent({ message: "liste os pedidos do ultimo mes" });
+
+  assert.match(unavailableDay.message.text, /periodo 01\/01\/2020 a 01\/01\/2020/i);
+  assert.match(lastWeek.message.text, /periodo \d{2}\/\d{2}\/\d{4} a \d{2}\/\d{2}\/\d{4}/i);
+  assert.doesNotMatch(lastWeek.message.text, /cliente ultima/i);
+  assert.match(previousWeek.message.text, /periodo \d{2}\/\d{2}\/\d{4} a \d{2}\/\d{2}\/\d{4}/i);
+  assert.match(lastMonth.message.text, /periodo \d{2}\/\d{2}\/\d{4} a \d{2}\/\d{2}\/\d{4}/i);
 });

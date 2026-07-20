@@ -108,7 +108,9 @@ export function registerSalesOrderTools(server: McpServer, gateway: CapabilityGa
     "list_sales_orders",
     {
       customerQuery: z.string().nullable().optional(),
-      dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable().optional(),
+      dateRange: z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]).nullable().optional(),
+      dateFrom: z.string().nullable().optional(),
+      dateTo: z.string().nullable().optional(),
       status: z.enum(["draft", "confirmed", "canceled"]).nullable().optional(),
       take: z.number().int().positive().max(100).nullable().optional()
     },

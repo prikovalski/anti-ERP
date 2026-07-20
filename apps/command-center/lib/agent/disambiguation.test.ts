@@ -35,14 +35,18 @@ test("createProductDisambiguation is valid in AgentResponseSchema", () => {
       name: "Mouse Basic",
       sku: "MOU-BASIC",
       unitPrice: 50,
-      availableStock: 10
+      availableStock: 10,
+      reservedStock: 0,
+      status: "active"
     },
     {
       id: "prd_mouse_pro",
       name: "Mouse Pro",
       sku: "MOU-PRO",
       unitPrice: 90,
-      availableStock: 4
+      availableStock: 4,
+      reservedStock: 0,
+      status: "active"
     }
   ]);
 

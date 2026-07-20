@@ -38,7 +38,7 @@ const IntentSchema = z.object({
   analytics: z.object({
     metric: z.enum(["units_sold", "revenue", "order_count"]).nullable(),
     groupBy: z.enum(["product", "customer", "day"]).nullable(),
-    dateRange: z.enum(["today", "last_7_days", "month_to_date", "all_time"]).nullable(),
+    dateRange: z.enum(["today", "last_7_days", "last_30_days", "month_to_date", "all_time"]).nullable(),
     productQueries: z.array(z.string()).nullable().optional()
   }).nullable(),
   confidence: z.number().min(0).max(1)
@@ -73,7 +73,7 @@ export async function inferIntentWithOpenRouter(message: string): Promise<AgentI
           {
             role: "system",
             content:
-              "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|add_item_to_order|set_order_item_quantity|remove_item_from_order|planned_workflow|create_order_with_invoice|list_orders|traditional_flow|analytics_query|inventory_diagnostic|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|month_to_date|all_time. Use planned_workflow when the user asks for multiple operational tasks in one message, such as creating a customer, product, order, invoice, and report. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For 'adicione um notebook no pedido criado', use intent=add_item_to_order, productQuery=notebook, quantity=1. For 'altere o notebook do pedido para 3 unidades', use intent=set_order_item_quantity, productQuery=notebook, quantity=3. For 'remova o monitor do pedido criado', use intent=remove_item_from_order, productQuery=monitor, quantity=0. For stock updates, set productUpdate.availableStock. For 'quais produtos estão com estoque baixo', use intent=inventory_diagnostic. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
+              "You classify user intent for an MCP-native ERP demo. Return only compact JSON. Use these exact enum values in English: intent=create_order|create_invoice|create_customer|create_product|create_supplier|update_product|add_item_to_order|set_order_item_quantity|remove_item_from_order|planned_workflow|create_order_with_invoice|list_orders|traditional_flow|analytics_query|inventory_diagnostic|unknown; analytics.metric=units_sold|revenue|order_count; analytics.groupBy=product|customer|day|null; analytics.dateRange=today|last_7_days|last_30_days|month_to_date|all_time. Use planned_workflow when the user asks for multiple operational tasks in one message, such as creating a customer, product, order, invoice, and report. For 'cadastre o cliente Atlas', use intent=create_customer and catalogName=Atlas. For 'cadastre o produto Mouse', use intent=create_product and catalogName=Mouse. For 'cadastre o fornecedor Delta', use intent=create_supplier and catalogName=Delta. For 'Atualize o preço do produto Mouse para 50 reais', use intent=update_product and productUpdate.productQuery=Mouse and productUpdate.unitPrice=50. For 'adicione um notebook no pedido criado', use intent=add_item_to_order, productQuery=notebook, quantity=1. For 'altere o notebook do pedido para 3 unidades', use intent=set_order_item_quantity, productQuery=notebook, quantity=3. For 'remova o monitor do pedido criado', use intent=remove_item_from_order, productQuery=monitor, quantity=0. For stock updates, set productUpdate.availableStock. For 'quais produtos estão com estoque baixo', use intent=inventory_diagnostic. For 'crie o pedido e a NF para Maria com 1 mouse e 1 monitor', use intent=create_order_with_invoice, customerQuery=Maria, orderLines=[{productQuery:'mouse',quantity:1},{productQuery:'monitor',quantity:1}], wantsInvoice=true. Never translate enum values. Never execute actions."
           },
           {
             role: "user",
@@ -216,13 +216,15 @@ function inferAnalyticsRequest(message: string) {
       : /\bpor\s+dia\b|\bdia\s+a\s+dia\b/.test(normalized)
         ? "day"
         : null;
-  const dateRange = normalized.includes("semana")
-    ? "last_7_days"
-    : normalized.includes("mes")
-      ? "month_to_date"
-      : normalized.includes("hoje")
-        ? "today"
-        : null;
+  const dateRange = /\b(30 dias|trinta dias|ultimos 30|ultimos trinta)\b/.test(normalized)
+    ? "last_30_days"
+    : normalized.includes("semana")
+      ? "last_7_days"
+      : normalized.includes("mes")
+        ? "month_to_date"
+        : normalized.includes("hoje")
+          ? "today"
+          : null;
   const productQueries = inferProductQueries(message);
 
   if (!metric && !groupBy && !dateRange && !productQueries.length) {
@@ -579,6 +581,9 @@ function mapDateRange(value: unknown) {
   }
   if (["last_7_days", "ultimos_7_dias", "últimos_7_dias", "semana"].includes(normalized)) {
     return "last_7_days";
+  }
+  if (["last_30_days", "ultimos_30_dias", "últimos_30_dias", "trinta_dias"].includes(normalized)) {
+    return "last_30_days";
   }
   if (["month_to_date", "mes_atual", "mês_atual"].includes(normalized)) {
     return "month_to_date";
