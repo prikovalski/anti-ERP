@@ -3,6 +3,7 @@ import type {
   AnalyticsGroupBy,
   AnalyticsMetric
 } from "@anti-erp/shared";
+import { normalizeText as normalizeSharedText } from "@anti-erp/shared";
 
 export type ExtractedOrderLine = {
   productQuery: string;
@@ -42,12 +43,7 @@ const NUMBER_WORDS = new Map<string, number>([
   ["vinte", 20]
 ]);
 
-export function normalizeText(value: string) {
-  return value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
+export const normalizeText = normalizeSharedText;
 
 export function cleanEntityName(value: string) {
   return value

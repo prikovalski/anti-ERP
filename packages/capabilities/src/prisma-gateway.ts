@@ -16,8 +16,12 @@ import {
   SalesOrderPreview,
   SearchCatalogInput,
   Supplier,
+  cleanName,
   demoCustomers,
-  demoProducts
+  demoProducts,
+  normalizeText,
+  roundMoney,
+  slugify
 } from "@anti-erp/shared";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { queryIntelligentReportFromSql } from "./intelligent-report";
@@ -143,25 +147,7 @@ function ensureInventorySchema() {
   return inventorySchemaPromise;
 }
 
-function normalize(value: string) {
-  return value
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function cleanName(value: string) {
-  return value.trim().replace(/\s+/g, " ");
-}
-
-function slugify(value: string) {
-  return normalize(value)
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 28);
-}
+const normalize = normalizeText;
 
 function randomToken() {
   return Math.random().toString(36).slice(2, 8);
@@ -2467,10 +2453,6 @@ function sumBy<T>(items: T[], keyFn: (item: T) => string, valueFn: (item: T) => 
 
 function riskWeight(value: string) {
   return value === "alto" ? 3 : value === "medio" ? 2 : 1;
-}
-
-function roundMoney(value: number) {
-  return Math.round(value * 100) / 100;
 }
 
 function formatReportMoney(value: number) {

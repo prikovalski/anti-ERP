@@ -14,7 +14,12 @@ import {
   SearchProductInputSchema,
   Supplier,
   UpdateProductInputSchema,
-  ValidateStockInputSchema
+  ValidateStockInputSchema,
+  cleanName,
+  isInsideDateRange,
+  normalizeText,
+  nowIso,
+  slugify
 } from "@anti-erp/shared";
 import { customers, products } from "./seed.js";
 
@@ -28,9 +33,7 @@ let nextAuditNumber = 1;
 let nextSalesOrderNumber = 1001;
 let nextConceptInvoiceNumber = 5001;
 
-function now() {
-  return new Date().toISOString();
-}
+const now = nowIso;
 
 function createId(prefix: string) {
   return `${prefix}-${nextAuditNumber++}`;
@@ -48,16 +51,7 @@ function createCatalogToken() {
   return Math.random().toString(36).slice(2, 8);
 }
 
-function cleanName(value: string) {
-  return value.trim().replace(/\s+/g, " ");
-}
-
-function slugify(value: string) {
-  return normalize(value)
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 28);
-}
+const normalize = normalizeText;
 
 function audit(action: string, summary: string, metadata?: Record<string, unknown>) {
   const event: AuditEvent = {
@@ -363,37 +357,6 @@ export function querySalesMetrics(input: unknown) {
 
 export function getAuditTimeline() {
   return auditEvents.slice(0, 25);
-}
-
-function normalize(value: string) {
-  return value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time") {
-  if (dateRange === "all_time") {
-    return true;
-  }
-
-  const date = new Date(createdAt);
-  const nowDate = new Date();
-  const start = new Date(nowDate);
-  if (dateRange === "today") {
-    start.setHours(0, 0, 0, 0);
-  }
-  if (dateRange === "last_7_days") {
-    start.setDate(start.getDate() - 7);
-  }
-  if (dateRange === "last_30_days") {
-    start.setDate(start.getDate() - 30);
-  }
-  if (dateRange === "month_to_date") {
-    start.setDate(1);
-    start.setHours(0, 0, 0, 0);
-  }
-  return date >= start && date < nowDate;
 }
 
 function buildMetricLabel(metric: string, productQuery: string | null | undefined, dateRange: string) {

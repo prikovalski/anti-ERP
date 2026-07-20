@@ -314,6 +314,9 @@ importers:
       '@anti-erp/config':
         specifier: workspace:*
         version: link:../config
+      '@types/node':
+        specifier: ^22.15.32
+        version: 22.20.0
       typescript:
         specifier: ^5.8.3
         version: 5.9.3

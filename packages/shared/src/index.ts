@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+export {
+  cleanName,
+  compactWhitespace,
+  isInsideDateRange,
+  normalizeText,
+  nowIso,
+  roundMoney,
+  slugify,
+  translateDateRange
+} from "./utils";
+
 export const CustomerSchema = z.object({
   id: z.string(),
   name: z.string(),

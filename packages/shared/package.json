@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc --noEmit",
     "lint": "tsc --noEmit",
+    "test": "tsx --test src/utils.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@anti-erp/config": "workspace:*",
+    "@types/node": "^22.15.32",
     "typescript": "^5.8.3"
   }
 }

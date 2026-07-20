@@ -14,8 +14,14 @@ import {
   SalesOrder,
   SalesOrderPreview,
   Supplier,
+  cleanName,
   demoCustomers,
-  demoProducts
+  demoProducts,
+  isInsideDateRange,
+  normalizeText,
+  nowIso,
+  roundMoney,
+  slugify
 } from "@anti-erp/shared";
 import { planIntelligentReport } from "@anti-erp/capabilities";
 import type { CapabilityGateway } from "./types";
@@ -27,9 +33,7 @@ const suppliers = new Map<string, Supplier>();
 let nextSalesOrderNumber = 1001;
 let nextConceptInvoiceNumber = 5001;
 
-function now() {
-  return new Date().toISOString();
-}
+const now = nowIso;
 
 function createSalesOrderId() {
   return `SO-${nextSalesOrderNumber++}`;
@@ -43,25 +47,7 @@ function createInventoryMovementId() {
   return `IM-${Date.now()}-${randomToken().toUpperCase()}`;
 }
 
-function normalize(value: string) {
-  return value
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-}
-
-function cleanName(value: string) {
-  return value.trim().replace(/\s+/g, " ");
-}
-
-function slugify(value: string) {
-  return normalize(value)
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 28);
-}
+const normalize = normalizeText;
 
 function randomToken() {
   return Math.random().toString(36).slice(2, 8);
@@ -1117,30 +1103,6 @@ function isInsideExplicitDateRange(createdAt: string, dateFrom?: string | null, 
   return date >= start && date < end;
 }
 
-function isInsideDateRange(createdAt: string, dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time") {
-  if (dateRange === "all_time") {
-    return true;
-  }
-
-  const date = new Date(createdAt);
-  const now = new Date();
-  const start = new Date(now);
-  if (dateRange === "today") {
-    start.setHours(0, 0, 0, 0);
-  }
-  if (dateRange === "last_7_days") {
-    start.setDate(start.getDate() - 7);
-  }
-  if (dateRange === "last_30_days") {
-    start.setDate(start.getDate() - 30);
-  }
-  if (dateRange === "month_to_date") {
-    start.setDate(1);
-    start.setHours(0, 0, 0, 0);
-  }
-  return date >= start && date < now;
-}
-
 function buildAnalyticsQuery(input: {
   productQuery?: string | null;
   customerQuery?: string | null;
@@ -1396,10 +1358,6 @@ function sumBy<T>(items: T[], keyFn: (item: T) => string, valueFn: (item: T) => 
 
 function riskWeight(value: string) {
   return value === "alto" ? 3 : value === "medio" ? 2 : 1;
-}
-
-function roundMoney(value: number) {
-  return Math.round(value * 100) / 100;
 }
 
 function formatReportMoney(value: number) {
