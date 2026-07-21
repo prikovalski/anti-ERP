@@ -9,6 +9,8 @@ flowchart LR
   Graph["LangGraph Agent"]
   OpenRouter["OpenRouter<br/>intent inference"]
   Gateway["Capability Gateway"]
+  PrismaGateway["Prisma Gateway<br/>recommended deploy path"]
+  McpGateway["MCP stdio Gateway<br/>local architecture path"]
   Customers["MCP Customers"]
   Products["MCP Products"]
   Suppliers["MCP Suppliers"]
@@ -23,12 +25,15 @@ flowchart LR
   API --> Graph
   Graph --> OpenRouter
   Graph --> Gateway
-  Gateway --> Customers
-  Gateway --> Products
-  Gateway --> Suppliers
-  Gateway --> SalesOrders
-  Gateway --> Invoices
-  Gateway --> Analytics
+  Gateway --> PrismaGateway
+  Gateway -. "optional local stdio" .-> McpGateway
+  McpGateway --> Customers
+  McpGateway --> Products
+  McpGateway --> Suppliers
+  McpGateway --> SalesOrders
+  McpGateway --> Invoices
+  McpGateway --> Analytics
+  PrismaGateway --> DB
   Customers --> DB
   Products --> DB
   Suppliers --> DB
@@ -58,12 +63,13 @@ LangGraph agent:
 - Composes user-facing responses.
 
 Capability Gateway:
-- Provides a stable interface between the agent and domain MCPs.
-- Routes each tool call to the correct MCP server.
+- Provides a stable interface between the agent and executable business capabilities.
+- Uses the Prisma gateway for public deploys.
+- Can route calls to domain MCP servers over stdio for local architecture experiments.
 - Records MCP traces and LangSmith child runs.
 
 MCP servers:
-- Own domain-specific tools for customers, products, suppliers, sales orders, invoices, and analytics.
+- Own domain-specific tools for customers, products, suppliers, sales orders, invoices, and analytics when `CAPABILITY_GATEWAY=mcp`.
 - Execute business operations against Postgres through Prisma.
 
 Postgres:
@@ -76,10 +82,12 @@ LangSmith and LangGraph Studio:
 ## Current Graph Routes
 
 - `sales_order`: prepares order previews and optional invoice intent.
-- `analytics`: answers sales metric questions.
-- `catalog`: creates customers, products, and suppliers.
+- `sales_order_update`: changes quantities, removes items, duplicates, cancels, and applies discounts.
+- `invoice`: issues, cancels, reissues, consults, and lists concept invoices.
+- `analytics`: answers sales metric questions and supports intelligent report generation.
+- `catalog`: creates, updates, searches, lists, activates, and deactivates customers, products, and suppliers.
 - `product_update`: updates product price or stock.
-- `invoice`: creates a concept invoice for the last confirmed order.
-- `orders_list`: lists recent orders.
+- `inventory`: creates entries, exits, adjustments, reservations, write-offs, low-stock alerts, stock position, and movement history.
+- `orders_list`: lists orders by customer, period, or status.
 - `traditional_flow`: explains traditional ERP flow versus anti-ERP flow.
-- `unknown`: returns supported capability guidance.
+- `clarification`: asks a specific follow-up question when intent or entities are ambiguous.

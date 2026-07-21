@@ -14,6 +14,12 @@ Most AI ERP demos add a chatbot on top of old workflows. anti-ERP treats agents 
 
 The result is a product that feels closer to a business command center than a traditional menu tree.
 
+## Current demo
+
+The current prototype already supports natural-language flows for catalog registration, sales orders, concept invoices, inventory movements, discounts, order and invoice listings, and managerial reports. When it is unsure, the agent should ask a specific clarifying question instead of failing with a generic unsupported-command message.
+
+The deployable demo uses the same capability interface as the MCP architecture, but runs through the Prisma gateway by default so it can persist data in Neon/Postgres without relying on stdio subprocesses in serverless hosting.
+
 ## Portfolio angle
 
 This project is designed to show product taste, technical architecture, AI literacy, and narrative clarity in one public prototype.

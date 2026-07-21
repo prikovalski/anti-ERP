@@ -13,10 +13,10 @@ Most ERP systems make people translate business intent into menu navigation, for
 anti-ERP flips the model:
 
 ```text
-Command Center -> Agent -> MCP Client -> anti-ERP MCP Server -> Domain Services -> Database
+Command Center -> API Routes -> LangGraph Agent -> Capability Gateway -> Prisma/Postgres
 ```
 
-The center of the system is not a CRUD REST API. The center is a set of explicit MCP tools that an agent can call safely, with validation, confirmation, and auditability.
+The center of the system is not a CRUD REST API. The center is a set of explicit business capabilities that an agent can call safely, with validation, confirmation, and auditability. The intended architecture is MCP-native; the public demo can run through the Prisma gateway to avoid stdio subprocesses in serverless hosting.
 
 ## MVP experience
 
@@ -45,8 +45,15 @@ The prototype:
 anti-erp/
 ├── apps/
 │   ├── command-center/
-│   └── mcp-server/
+│   ├── mcp-analytics/
+│   ├── mcp-customers/
+│   ├── mcp-invoices/
+│   ├── mcp-products/
+│   ├── mcp-sales-orders/
+│   ├── mcp-server/
+│   └── mcp-suppliers/
 ├── packages/
+│   ├── capabilities/
 │   ├── shared/
 │   └── config/
 ├── prisma/
@@ -60,66 +67,109 @@ anti-erp/
 
 - Monorepo with pnpm workspaces and Turborepo
 - Command Center: Next.js, TypeScript, Tailwind CSS
-- MCP Server: TypeScript and MCP SDK
-- Shared contracts: Zod schemas and TypeScript types
-- Persistence roadmap: Prisma and PostgreSQL, preferably Neon
-- AI roadmap: OpenAI Responses API, tool calling, structured outputs, guardrails, observability, evals
+- Agent orchestration: LangGraph with deterministic local parsing and optional OpenRouter inference
+- Capability layer: Prisma gateway for deploys, MCP stdio gateway for local architecture experiments
+- MCP servers: TypeScript and MCP SDK, split by domain
+- Shared contracts: Zod schemas, TypeScript types, and utility helpers
+- Persistence: Prisma and PostgreSQL, preferably Neon
+- Observability: LangSmith traces plus local MCP call logs
 
-## MCP tools
+## Capabilities
 
-- `search_customer`
-- `search_product`
-- `validate_stock`
-- `prepare_sales_order`
-- `create_sales_order`
-- `create_concept_invoice`
-- `get_sales_order`
-- `list_recent_orders`
-- `get_traditional_erp_flow`
+- Catalog: create, update, search, list, activate, and deactivate customers, products, and suppliers.
+- Sales orders: prepare, confirm, update items, apply discounts, cancel, duplicate, consult, and list by customer, period, or status.
+- Invoices: issue from sales orders, cancel, reissue, consult, and list by period.
+- Inventory: entry, exit, adjustment, reservation, order write-off, low-stock alerts, position, and movement history.
+- Analytics: natural-language managerial reports over sales, revenue, stock, rankings, margins, and trends.
+- Auditability: every meaningful action can be traced as a capability call and surfaced in the UI.
 
 Key rule: `prepare_sales_order` only creates a preview. `create_sales_order` requires explicit user confirmation.
 
 ## Capability gateway
 
-The Command Center talks to capabilities through a gateway interface. By default, it uses the deterministic in-memory gateway for a stable public demo:
+The Command Center talks to capabilities through a gateway interface. For the current public demo posture, use Prisma with Neon/Postgres:
+
+```bash
+CAPABILITY_GATEWAY=prisma
+MCP_STDIO_ENABLED=false
+DATABASE_URL="postgresql://..."
+```
+
+This mode persists customers, products, suppliers, inventory, sales orders, concept invoices, audit events, document counters, and MCP call logs.
+
+To use the deterministic in-memory gateway without a database:
 
 ```bash
 CAPABILITY_GATEWAY=demo
 ```
 
-To exercise the MCP-native path locally:
+To exercise the MCP-native stdio path locally:
 
 ```bash
 CAPABILITY_GATEWAY=mcp
+MCP_STDIO_ENABLED=true
 MCP_SERVER_COMMAND=pnpm
 MCP_SERVER_ARGS="--filter @anti-erp/mcp-server dev"
 ```
 
-In both modes, the agent orchestrates capabilities. Domain actions stay behind explicit operations such as `search_customer`, `validate_stock`, `prepare_sales_order`, and `create_sales_order`.
+In all modes, the agent orchestrates capabilities. Domain actions stay behind explicit operations such as customer search, stock validation, sales-order preparation, invoice issue, inventory write-off, and managerial reporting.
 
-To persist demo state with Prisma/PostgreSQL:
+## Database setup
+
+Prisma commands run from the repository root and read `.env` from the repository root:
+
+```text
+anti-ERP/
+  .env
+  apps/
+    command-center/
+      .env.local
+```
+
+Root `.env`:
 
 ```bash
 DATABASE_URL="postgresql://..."
 CAPABILITY_GATEWAY=prisma
-pnpm db:generate
-pnpm db:push
-pnpm db:seed
+MCP_STDIO_ENABLED=false
 ```
 
-The Prisma gateway persists sales orders, concept invoices, audit events, and document counters. If `DATABASE_URL` is missing, the public demo should stay on `CAPABILITY_GATEWAY=demo`.
+Then run:
+
+```bash
+pnpm db:generate
+pnpm db:push
+```
+
+Run `pnpm db:seed` only when you intentionally want to insert demo data. Do not run seed against a shared or already-populated database unless you have reviewed the seed script.
 
 ## Run locally
 
+Install dependencies:
+
 ```bash
 pnpm install
+```
+
+Create `apps/command-center/.env.local` for the Next.js app:
+
+```bash
+DATABASE_URL="postgresql://..."
+CAPABILITY_GATEWAY=prisma
+MCP_STDIO_ENABLED=false
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+Start the Command Center:
+
+```bash
 pnpm command-center:dev
 ```
 
-In another terminal:
+Open:
 
-```bash
-pnpm mcp:dev
+```text
+http://localhost:3000
 ```
 
 ## LLM configuration
@@ -135,6 +185,39 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
 Do not expose secrets with `NEXT_PUBLIC_`. The browser calls `/api/agent`; the OpenRouter key stays server-side only. If OpenRouter is unavailable, rate-limited, or returns invalid output, the app falls back to the deterministic demo-agent.
+
+## LangSmith observability
+
+LangSmith is optional and server-side only:
+
+```bash
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your_server_side_key
+LANGSMITH_PROJECT=anti-erp
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+```
+
+When enabled, traces show graph execution, intent routing decisions, capability calls, errors, and clarification flows.
+
+## Deploy
+
+Recommended first deploy:
+
+- Host the Next.js app on Vercel.
+- Use Neon/Postgres for `DATABASE_URL`.
+- Set `CAPABILITY_GATEWAY=prisma`.
+- Set `MCP_STDIO_ENABLED=false`.
+- Store OpenRouter, LangSmith, and database credentials only as platform environment variables.
+- Run `pnpm db:generate` and `pnpm db:push` from a trusted local terminal or CI job before the first deploy.
+- Do not run `pnpm db:seed` against production unless you intentionally want demo records.
+
+For Vercel monorepo settings:
+
+```text
+Root Directory: apps/command-center
+Install Command: pnpm install --frozen-lockfile
+Build Command: pnpm --filter @anti-erp/command-center build
+```
 
 ## Why this matters
 
