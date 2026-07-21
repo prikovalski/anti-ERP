@@ -362,7 +362,7 @@ export default function CommandCenterPage() {
           <button type="button"><UiIcon label="✦" /> Aprendizados</button>
           <button type="button"><UiIcon label="⌘" /> Capacidades</button>
         </nav>
-        <div className="sidebar-profile"><span>P</span><div><strong>Pricila</strong><small>Ambiente principal</small></div></div>
+        <div className="sidebar-profile"><span>a</span><div><small>Ambiente demo</small></div></div>
       </aside>
 
       <section className="command-workspace">
@@ -375,7 +375,7 @@ export default function CommandCenterPage() {
           {!hasWorkspaceContent && messages.length === 1 ? (
             <section className="welcome-state">
               <span className="welcome-mark">a</span>
-              <h1>Ola, Pricila. O que vamos resolver?</h1>
+              <h1>O que vamos resolver?</h1>
               <p>Peca uma operacao, faca uma pergunta ou solicite uma analise.</p>
             </section>
           ) : (
