@@ -186,6 +186,18 @@ test("direct agent executes natural inventory and managerial report commands wit
   assert.deepEqual(productRevenue.intelligentReport?.columns, ["produto", "quantidade", "faturamento", "pedidos"]);
 });
 
+test("direct agent treats catalog delete language as safe product deactivation", async () => {
+  const suffix = Math.random().toString(36).slice(2, 7);
+  const productName = `MCP Migracao ${suffix}`;
+  await demoCapabilityGateway.createProduct({ name: productName });
+
+  const response = await runDirectAgent({ message: `exclua o produto ${productName}` });
+  const [product] = await demoCapabilityGateway.searchProduct({ query: productName });
+
+  assert.match(response.message.text, /Produto .* inativado com sucesso\./);
+  assert.equal(product?.status, "inactive");
+});
+
 test("direct agent asks clarifying questions for incomplete informal commands", async () => {
   const incompleteOrder = await runDirectAgent({ message: "faz um pedido" });
   const vagueReport = await runDirectAgent({ message: "quero um relatorio" });

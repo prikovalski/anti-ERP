@@ -1039,7 +1039,7 @@ function parseExplicitCatalogCommand(message: string): {
   if (!kind) {
     return { action: null, kind, query: null, nextName: null, status: null };
   }
-  const status = /\b(inative|inativar|desative|desativar|bloqueie|bloquear|inativo|inativos)\b/.test(normalized)
+  const status = /\b(inative|inativar|desative|desativar|bloqueie|bloquear|exclua|excluir|remova|remover|delete|deletar|apague|apagar|inativo|inativos)\b/.test(normalized)
     ? "inactive"
     : /\b(ative|ativar|ativo|ativos)\b/.test(normalized)
       ? "active"

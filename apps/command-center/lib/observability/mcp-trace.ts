@@ -344,31 +344,39 @@ async function createLangSmithRootRun(input: {
     return null;
   }
 
-  const { RunTree } = await import("langsmith/run_trees");
-  const { Client } = await import("langsmith");
-  const client = new Client({
-    apiKey,
-    apiUrl: process.env.LANGSMITH_ENDPOINT ?? process.env.LANGCHAIN_ENDPOINT,
-    workspaceId: process.env.LANGSMITH_WORKSPACE_ID ?? process.env.LANGCHAIN_WORKSPACE_ID,
-    hideInputs: (values) => summarize(values),
-    hideOutputs: (values) => summarize(values),
-    hideMetadata: (values) => summarize(values)
-  });
-  return new RunTree({
-    name: input.name,
-    run_type: "chain",
-    client,
-    project_name: process.env.LANGSMITH_PROJECT ?? "anti-erp",
-    inputs: {
-      requestId: input.requestId,
-      ...summarize(input.inputs)
-    },
-    tags: ["anti-erp", "agent-flow", ...input.tags],
-    metadata: {
-      requestId: input.requestId,
-      ...summarize(input.metadata)
-    }
-  }) as LangSmithRunTree;
+  try {
+    const { RunTree } = await import("langsmith/run_trees");
+    const { Client } = await import("langsmith");
+    const client = new Client({
+      apiKey,
+      apiUrl: process.env.LANGSMITH_ENDPOINT ?? process.env.LANGCHAIN_ENDPOINT,
+      workspaceId: process.env.LANGSMITH_WORKSPACE_ID ?? process.env.LANGCHAIN_WORKSPACE_ID,
+      hideInputs: (values) => summarize(values),
+      hideOutputs: (values) => summarize(values),
+      hideMetadata: (values) => summarize(values)
+    });
+    return new RunTree({
+      name: input.name,
+      run_type: "chain",
+      client,
+      project_name: process.env.LANGSMITH_PROJECT ?? "anti-erp",
+      inputs: {
+        requestId: input.requestId,
+        ...summarize(input.inputs)
+      },
+      tags: ["anti-erp", "agent-flow", ...input.tags],
+      metadata: {
+        requestId: input.requestId,
+        ...summarize(input.metadata)
+      }
+    }) as LangSmithRunTree;
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "langsmith_disabled_for_request",
+      error: summarizeError(error)
+    }));
+    return null;
+  }
 }
 
 async function finalizeLangSmithRootRun(
@@ -380,8 +388,15 @@ async function finalizeLangSmithRootRun(
     return;
   }
 
-  await run.end(summarize(outputs), error);
-  await run.patchRun();
+  try {
+    await run.end(summarize(outputs), error);
+    await run.patchRun();
+  } catch (runError) {
+    console.warn(JSON.stringify({
+      event: "langsmith_finalize_failed",
+      error: summarizeError(runError)
+    }));
+  }
 }
 
 async function sendLangSmithMcpTrace(rootRun: LangSmithRunTree | null, entry: McpTraceEntry) {
@@ -424,29 +439,37 @@ async function sendLangSmithChildRun(
     return;
   }
 
-  const child = rootRun.createChild({
-    name: input.name,
-    run_type: input.runType,
-    inputs: {
-      requestId: input.requestId,
-      inputSummary: input.inputSummary
-    },
-    tags: input.tags,
-    metadata: {
-      requestId: input.requestId,
-      status: input.status,
-      durationMs: input.durationMs,
-      ...(input.metadata ?? {})
-    },
-    start_time: new Date(new Date(input.timestamp).getTime() - input.durationMs).toISOString()
-  });
+  try {
+    const child = rootRun.createChild({
+      name: input.name,
+      run_type: input.runType,
+      inputs: {
+        requestId: input.requestId,
+        inputSummary: input.inputSummary
+      },
+      tags: input.tags,
+      metadata: {
+        requestId: input.requestId,
+        status: input.status,
+        durationMs: input.durationMs,
+        ...(input.metadata ?? {})
+      },
+      start_time: new Date(new Date(input.timestamp).getTime() - input.durationMs).toISOString()
+    });
 
-  await child.postRun();
-  await child.end(
-    input.status === "success" ? { outputSummary: input.outputSummary ?? {} } : undefined,
-    input.error ?? undefined
-  );
-  await child.patchRun();
+    await child.postRun();
+    await child.end(
+      input.status === "success" ? { outputSummary: input.outputSummary ?? {} } : undefined,
+      input.error ?? undefined
+    );
+    await child.patchRun();
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "langsmith_child_run_failed",
+      run: input.name,
+      error: summarizeError(error)
+    }));
+  }
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
