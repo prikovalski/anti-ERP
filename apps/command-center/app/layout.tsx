@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "anti-ERP Command Center",
-  description: "The first MCP-native AI ERP experiment."
+  title: "anti-ERP — Seu negocio em linguagem natural",
+  description: "Um experimento sobre como softwares empresariais podem ser construidos na era dos agentes de IA."
 };
 
 export default function RootLayout({
@@ -13,7 +13,7 @@ export default function RootLayout({
   children: ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="pt-BR">
       <body>{children}</body>
     </html>
   );

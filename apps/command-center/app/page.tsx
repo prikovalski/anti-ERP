@@ -12,7 +12,7 @@ import type {
   SalesOrder,
   SalesOrderPreview
 } from "@anti-erp/shared";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Message = {
   id: string;
@@ -109,7 +109,7 @@ function UiIcon({ label, size = 16 }: { label: string; size?: number }) {
 }
 
 export default function CommandCenterPage() {
-  const [input, setInput] = useState("Crie um pedido para Northstar com 10 notebooks e gere a nota.");
+  const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -132,6 +132,7 @@ export default function CommandCenterPage() {
   const [mcpTrace, setMcpTrace] = useState<McpTrace>([]);
   const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
   const [pending, setPending] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [audit, setAudit] = useState<AuditEvent[]>([
     createAudit("session_started", "Command Center opened in LangGraph mode.", "system")
   ]);
@@ -139,17 +140,23 @@ export default function CommandCenterPage() {
   const suggestions = useMemo(
     () => [
       "Crie um pedido para Northstar com 10 notebooks",
-      "Crie o pedido e a NF para Globo com 1 monitor e 1 teclado",
-      "Cadastre o cliente Atlas Retail",
-      "Cadastre o produto Mouse",
-      "Liste os produtos cadastrados",
-      "Atualize o preco do produto Mouse para 50 reais",
       "Quais produtos estao com estoque baixo?",
       "Quais produtos mais venderam hoje?",
-      "Compare o faturamento de notebooks e monitores hoje"
+      "Gere um relatorio executivo de faturamento deste mes"
     ],
     []
   );
+
+  useEffect(() => {
+    if (window.localStorage.getItem("anti-erp-onboarding-seen") !== "true") {
+      setShowOnboarding(true);
+    }
+  }, []);
+
+  function finishOnboarding() {
+    window.localStorage.setItem("anti-erp-onboarding-seen", "true");
+    setShowOnboarding(false);
+  }
 
   function applyAgentResponse(response: AgentResponse) {
     if (isAgentQuestion(response.message.text)) {
@@ -335,103 +342,124 @@ export default function CommandCenterPage() {
     setDocumentListBeforeDetail(null);
   }
 
+  const hasWorkspaceContent = Boolean(
+    preview || order || invoice || analyticsResult || managerialReport || intelligentReport || executionPlan || documentMessage
+  );
+
   return (
     <main className="anti-erp-shell">
-      <aside className="chat-column">
-        <div className="chat-brand">
-          <div>
-            <p className="eyebrow">anti-ERP</p>
-            <h1>Command Center</h1>
-          </div>
-          <span className="mode-pill">
-            <UiIcon label="*" size={15} />
-            {agentMode === "openrouter" ? "OpenRouter" : "LangGraph"}
-          </span>
-        </div>
+      <aside className="app-sidebar">
+        <div className="sidebar-brand"><span className="brand-mark">a</span><strong>anti-ERP</strong></div>
+        <button className="new-task-button" type="button" onClick={() => window.location.reload()}>
+          <UiIcon label="+" size={17} /> Nova tarefa
+        </button>
+        <nav className="sidebar-nav" aria-label="Navegacao principal">
+          <span>Recentes</span>
+          <button type="button">Pedido Northstar</button>
+          <button type="button">Estoque disponivel</button>
+          <button type="button">Vendas de julho</button>
+          <span>Seu anti-ERP</span>
+          <button type="button"><UiIcon label="✦" /> Aprendizados</button>
+          <button type="button"><UiIcon label="⌘" /> Capacidades</button>
+        </nav>
+        <div className="sidebar-profile"><span>P</span><div><strong>Pricila</strong><small>Ambiente principal</small></div></div>
+      </aside>
 
-        <div className="chat-messages" aria-live="polite">
-          {messages.map((message) => (
-            <div key={message.id} className={`chat-bubble ${message.role}`}>
-              <div className="bubble-role">
-                {message.role === "agent" ? <UiIcon label="AI" size={14} /> : <UiIcon label=">" size={14} />}
-                {message.role === "agent" ? "Agente" : "Voce"}
-              </div>
-              <p>{message.text}</p>
+      <section className="command-workspace">
+        <header className="workspace-topbar">
+          <strong>Nova tarefa</strong>
+          <div className="topbar-status"><i />Aprendendo suas preferencias <TraceSummary trace={mcpTrace} /></div>
+        </header>
+
+        <div className="workspace-stream">
+          {!hasWorkspaceContent && messages.length === 1 ? (
+            <section className="welcome-state">
+              <span className="welcome-mark">a</span>
+              <h1>Ola, Pricila. O que vamos resolver?</h1>
+              <p>Peca uma operacao, faca uma pergunta ou solicite uma analise.</p>
+            </section>
+          ) : (
+            <div className="conversation-stream" aria-live="polite">
+              {messages.slice(1).map((message) => (
+                <div key={message.id} className={`chat-bubble ${message.role}`}>
+                  {message.role === "agent" ? <span className="message-agent-mark">a</span> : null}
+                  <div><small>{message.role === "agent" ? "anti-ERP" : "Voce"}</small><p>{message.text}</p></div>
+                </div>
+              ))}
+              {pending ? (
+                <div className="agent-working">
+                  <span className="message-agent-mark">a</span>
+                  <div><strong>Preparando sua solicitacao</strong><span><i /><i /><i /></span></div>
+                </div>
+              ) : null}
             </div>
-          ))}
-          {pending ? (
-            <div className="chat-bubble agent">
-              <div className="bubble-role">
-                <UiIcon label="AI" size={14} />
-                Agente
-              </div>
-              <p>Processando...</p>
-            </div>
+          )}
+
+          {hasWorkspaceContent ? (
+            <DocumentWorkspace
+              analyticsResult={analyticsResult}
+              audit={audit}
+              conversationContext={conversationContext}
+              createInvoiceAfterConfirm={createInvoiceAfterConfirm}
+              documentMessage={documentMessage}
+              executionPlan={executionPlan}
+              invoice={invoice}
+              intelligentReport={intelligentReport}
+              managerialReport={managerialReport}
+              mcpTrace={mcpTrace}
+              order={order}
+              pending={pending}
+              preview={preview}
+              setCreateInvoiceAfterConfirm={setCreateInvoiceAfterConfirm}
+              onConfirmPreview={confirmPreview}
+              onOpenDocumentDetail={openDocumentDetail}
+              onBackToList={documentListBeforeDetail ? backToDocumentList : undefined}
+            />
           ) : null}
         </div>
 
-        <div className="suggestion-list">
-          {suggestions.map((suggestion) => (
-            <button key={suggestion} type="button" onClick={() => setInput(suggestion)}>
-              {suggestion}
-            </button>
-          ))}
+        <div className="composer-dock">
+          {!hasWorkspaceContent && messages.length === 1 ? (
+            <div className="suggestion-grid">
+              {suggestions.map((suggestion, index) => (
+                <button key={suggestion} type="button" onClick={() => setInput(suggestion)}>
+                  <strong>{["Criar um pedido", "Consultar estoque", "Analisar vendas", "Gerar relatorio"][index]}</strong>
+                  <span>{suggestion}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); runIntent(input); }}>
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  runIntent(input);
+                }
+              }}
+              aria-label="Converse com seu negocio"
+              placeholder="Converse com seu negocio..."
+            />
+            <div><span>O anti-ERP confirma antes de alteracoes importantes.</span><button type="submit" disabled={pending || !input.trim()} aria-label="Enviar comando">↑</button></div>
+          </form>
         </div>
-
-        <form
-          className="chat-input"
-          onSubmit={(event) => {
-            event.preventDefault();
-            runIntent(input);
-          }}
-        >
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                runIntent(input);
-              }
-            }}
-            aria-label="Comando de negocio"
-            placeholder="Digite um comando, ex: crie um pedido para a Northstar de 10 notebooks"
-          />
-          <button type="submit" disabled={pending} title="Enviar comando">
-            <UiIcon label=">" size={20} />
-          </button>
-        </form>
-      </aside>
-
-      <section className="document-column">
-        <div className="workspace-header">
-          <div>
-            <p className="eyebrow dark">workspace</p>
-            <h2>Documentos e resultados</h2>
-          </div>
-          <TraceSummary trace={mcpTrace} />
-        </div>
-
-        <DocumentWorkspace
-          analyticsResult={analyticsResult}
-          audit={audit}
-          conversationContext={conversationContext}
-          createInvoiceAfterConfirm={createInvoiceAfterConfirm}
-          documentMessage={documentMessage}
-          executionPlan={executionPlan}
-          invoice={invoice}
-          intelligentReport={intelligentReport}
-          managerialReport={managerialReport}
-          mcpTrace={mcpTrace}
-          order={order}
-          pending={pending}
-          preview={preview}
-          setCreateInvoiceAfterConfirm={setCreateInvoiceAfterConfirm}
-          onConfirmPreview={confirmPreview}
-          onOpenDocumentDetail={openDocumentDetail}
-          onBackToList={documentListBeforeDetail ? backToDocumentList : undefined}
-        />
       </section>
+
+      {showOnboarding ? (
+        <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+          <div className="onboarding-card">
+            <span className="onboarding-mark">a</span>
+            <p className="onboarding-step">Boas-vindas ao anti-ERP</p>
+            <h2 id="onboarding-title">Voce nao precisa aprender um ERP.</h2>
+            <p>Conte o que deseja fazer. O anti-ERP entende sua intencao, valida os dados e pede confirmacao antes de agir.</p>
+            <div className="onboarding-example"><span className="typing-line">Crie um pedido para a Northstar com 10 notebooks.</span></div>
+            <div className="onboarding-flow"><span>Entender</span><i>→</i><span>Validar</span><i>→</i><span>Confirmar</span><i>→</i><span>Executar</span></div>
+            <div className="onboarding-actions"><button type="button" className="secondary-action" onClick={finishOnboarding}>Pular introducao</button><button type="button" className="primary-action" onClick={finishOnboarding}>Experimentar</button></div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -954,7 +982,7 @@ function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
         <div
           className="result-table-row result-table-head"
           role="row"
-          style={{ gridTemplateColumns: buildResultTableColumns(report.columns.length) }}
+          style={{ gridTemplateColumns: buildResultTableColumns(report.columns) }}
         >
           {report.columns.map((column) => (
             <span key={column} role="columnheader">{formatColumnLabel(column)}</span>
@@ -965,7 +993,7 @@ function ManagerialReportDocument({ report }: { report: ManagerialReport }) {
             key={`${report.kind}-${rowIndex}`}
             className="result-table-row"
             role="row"
-            style={{ gridTemplateColumns: buildResultTableColumns(report.columns.length) }}
+            style={{ gridTemplateColumns: buildResultTableColumns(report.columns) }}
           >
             {report.columns.map((column) => (
               <span key={`${rowIndex}-${column}`} role="cell">{formatReportCell(row[column], column)}</span>
@@ -1804,6 +1832,12 @@ function extractSemicolonItems(text: string) {
 }
 
 function buildResultTableColumns(columns: number | string[]) {
+  if (Array.isArray(columns) && columns.join("|") === "produto|sku|disponivel|reservado|preco") {
+    return "minmax(220px, 1.1fr) minmax(280px, 1.9fr) 130px 130px 150px";
+  }
+  if (Array.isArray(columns) && columns.join("|") === "produto|sku|availableStock|reservedStock|unitPrice") {
+    return "minmax(220px, 1.1fr) minmax(280px, 1.9fr) 130px 130px 150px";
+  }
   if (Array.isArray(columns) && columns.join("|") === "produto|quantidade|faturamento|pedidos") {
     return "minmax(260px, 1fr) 130px 170px 120px";
   }
