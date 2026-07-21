@@ -45,6 +45,35 @@ type ResultTable = {
   rows: string[][];
 };
 
+type WorkspaceView = "command" | "capabilities";
+
+type BusinessCapability = {
+  id: string;
+  category: "Vendas e pedidos" | "Cadastros" | "Estoque" | "Análises" | "Relatórios gerenciais";
+  title: string;
+  description: string;
+  example: string;
+  safety: "Requer confirmação" | "Somente consulta" | "Ação controlada";
+  status: "Disponível" | "Experimental";
+  keywords: string;
+};
+
+const businessCapabilities: BusinessCapability[] = [
+  { id: "create-order", category: "Vendas e pedidos", title: "Criar pedidos", description: "Localiza cliente e produtos, valida o estoque e prepara o pedido antes de qualquer alteração.", example: "Crie um pedido para a Northstar com 10 notebooks e gere a nota.", safety: "Requer confirmação", status: "Disponível", keywords: "pedido venda cliente produto nota fiscal" },
+  { id: "change-order", category: "Vendas e pedidos", title: "Alterar itens e quantidades", description: "Adiciona, remove ou altera itens de um pedido mantendo o contexto da conversa.", example: "Adicione 2 monitores ao pedido atual.", safety: "Ação controlada", status: "Disponível", keywords: "alterar adicionar remover item quantidade pedido" },
+  { id: "discount-order", category: "Vendas e pedidos", title: "Aplicar descontos", description: "Aplica desconto ao pedido inteiro ou a um item e protege contra descontos sucessivos acidentais.", example: "Aplique 10% de desconto no pedido atual.", safety: "Requer confirmação", status: "Disponível", keywords: "desconto percentual valor item pedido" },
+  { id: "list-orders", category: "Vendas e pedidos", title: "Consultar pedidos e notas", description: "Lista documentos por cliente ou período e permite abrir seus detalhes e itens.", example: "Liste os pedidos da Globo nos últimos 30 dias.", safety: "Somente consulta", status: "Disponível", keywords: "listar consultar pedido nota fiscal cliente periodo" },
+  { id: "create-customer", category: "Cadastros", title: "Cadastrar clientes", description: "Cria clientes a partir de uma frase e pergunta quando faltam dados essenciais.", example: "Cadastre o cliente Atlas Retail em São Paulo.", safety: "Ação controlada", status: "Disponível", keywords: "cadastrar criar cliente cidade cnpj" },
+  { id: "create-product", category: "Cadastros", title: "Cadastrar e atualizar produtos", description: "Cria produtos e atualiza preço ou estoque sem exigir navegação por formulários.", example: "Cadastre o produto Mouse sem fio por R$ 120.", safety: "Ação controlada", status: "Disponível", keywords: "produto cadastrar criar atualizar preço estoque" },
+  { id: "create-supplier", category: "Cadastros", title: "Cadastrar fornecedores", description: "Registra fornecedores e permite localizá-los depois pela linguagem usada no dia a dia.", example: "Cadastre o fornecedor Horizonte Tecnologia.", safety: "Ação controlada", status: "Disponível", keywords: "fornecedor cadastrar criar" },
+  { id: "inventory-position", category: "Estoque", title: "Consultar estoque disponível", description: "Mostra a posição atual por produto sem misturar o resultado com o histórico de movimentações.", example: "Liste o estoque disponível por produto.", safety: "Somente consulta", status: "Disponível", keywords: "estoque disponível posição produto quantidade" },
+  { id: "inventory-entry", category: "Estoque", title: "Registrar entrada de estoque", description: "Adiciona quantidades a um produto e registra a movimentação para consulta posterior.", example: "Adicione 10 unidades ao estoque do Mouse sem fio.", safety: "Ação controlada", status: "Disponível", keywords: "entrada estoque adicionar quantidade produto" },
+  { id: "inventory-risk", category: "Estoque", title: "Identificar risco de ruptura", description: "Cruza disponibilidade e demanda para destacar produtos que precisam de atenção.", example: "Quais produtos estão com risco de falta no estoque?", safety: "Somente consulta", status: "Experimental", keywords: "estoque baixo ruptura risco reposição demanda" },
+  { id: "sales-analysis", category: "Análises", title: "Analisar vendas e faturamento", description: "Responde perguntas por período, cliente ou produto com valores consolidados e detalhamento.", example: "Quanto vendemos nos últimos 30 dias por produto?", safety: "Somente consulta", status: "Disponível", keywords: "vendas faturamento receita período cliente produto" },
+  { id: "compare-performance", category: "Análises", title: "Comparar desempenho", description: "Compara produtos, clientes ou períodos usando as mesmas regras de cálculo.", example: "Compare o faturamento de notebooks e monitores este mês.", safety: "Somente consulta", status: "Disponível", keywords: "comparar desempenho faturamento produto período" },
+  { id: "executive-report", category: "Relatórios gerenciais", title: "Gerar relatório executivo", description: "Interpreta a solicitação, consulta o banco em modo somente leitura e produz explicações, tabelas e PDF.", example: "Gere um relatório executivo de faturamento por cliente deste mês.", safety: "Somente consulta", status: "Experimental", keywords: "relatório gerencial executivo pdf gráfico tabela análise" }
+];
+
 const emptyConversationContext: ConversationContext = {
   activeOrderId: null,
   activeInvoiceId: null,
@@ -109,6 +138,7 @@ function UiIcon({ label, size = 16 }: { label: string; size?: number }) {
 }
 
 export default function CommandCenterPage() {
+  const [activeView, setActiveView] = useState<WorkspaceView>("command");
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -133,7 +163,8 @@ export default function CommandCenterPage() {
   const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
   const [pending, setPending] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [audit, setAudit] = useState<AuditEvent[]>([
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [, setAudit] = useState<AuditEvent[]>([
     createAudit("session_started", "Command Center opened in LangGraph mode.", "system")
   ]);
 
@@ -153,10 +184,32 @@ export default function CommandCenterPage() {
     }
   }, []);
 
-  function finishOnboarding() {
+  function finishOnboarding(example?: string) {
     window.localStorage.setItem("anti-erp-onboarding-seen", "true");
+    if (example) {
+      setInput(example);
+    }
     setShowOnboarding(false);
   }
+
+  useEffect(() => {
+    if (!showOnboarding) return;
+
+    function navigateOnboarding(event: KeyboardEvent) {
+      if (event.key === "ArrowRight") {
+        setOnboardingStep((current) => Math.min(current + 1, 4));
+      }
+      if (event.key === "ArrowLeft") {
+        setOnboardingStep((current) => Math.max(current - 1, 0));
+      }
+      if (event.key === "Escape") {
+        finishOnboarding();
+      }
+    }
+
+    window.addEventListener("keydown", navigateOnboarding);
+    return () => window.removeEventListener("keydown", navigateOnboarding);
+  }, [showOnboarding]);
 
   function applyAgentResponse(response: AgentResponse) {
     if (isAgentQuestion(response.message.text)) {
@@ -360,18 +413,28 @@ export default function CommandCenterPage() {
           <button type="button">Vendas de julho</button>
           <span>Seu anti-ERP</span>
           <button type="button"><UiIcon label="✦" /> Aprendizados</button>
-          <button type="button"><UiIcon label="⌘" /> Capacidades</button>
+          <button className={activeView === "capabilities" ? "active" : ""} type="button" onClick={() => setActiveView("capabilities")}><UiIcon label="⌘" /> Capacidades</button>
         </nav>
         <div className="sidebar-profile"><span>a</span><div><small>Ambiente demo</small></div></div>
       </aside>
 
       <section className="command-workspace">
         <header className="workspace-topbar">
-          <strong>Nova tarefa</strong>
+          <strong>{activeView === "capabilities" ? "Capacidades" : "Nova tarefa"}</strong>
           <div className="topbar-status"><i />Aprendendo suas preferencias <TraceSummary trace={mcpTrace} /></div>
         </header>
 
-        <div className="workspace-stream">
+        <div className={`workspace-stream ${activeView === "capabilities" ? "capabilities-workspace" : ""}`}>
+          {activeView === "capabilities" ? (
+            <CapabilitiesView
+              onBack={() => setActiveView("command")}
+              onTry={(example) => {
+                setInput(example);
+                setActiveView("command");
+              }}
+            />
+          ) : (
+          <>
           {!hasWorkspaceContent && messages.length === 1 ? (
             <section className="welcome-state">
               <span className="welcome-mark">a</span>
@@ -398,7 +461,6 @@ export default function CommandCenterPage() {
           {hasWorkspaceContent ? (
             <DocumentWorkspace
               analyticsResult={analyticsResult}
-              audit={audit}
               conversationContext={conversationContext}
               createInvoiceAfterConfirm={createInvoiceAfterConfirm}
               documentMessage={documentMessage}
@@ -406,7 +468,6 @@ export default function CommandCenterPage() {
               invoice={invoice}
               intelligentReport={intelligentReport}
               managerialReport={managerialReport}
-              mcpTrace={mcpTrace}
               order={order}
               pending={pending}
               preview={preview}
@@ -416,9 +477,11 @@ export default function CommandCenterPage() {
               onBackToList={documentListBeforeDetail ? backToDocumentList : undefined}
             />
           ) : null}
+          </>
+          )}
         </div>
 
-        <div className="composer-dock">
+        {activeView === "command" ? <div className="composer-dock">
           {!hasWorkspaceContent && messages.length === 1 ? (
             <div className="suggestion-grid">
               {suggestions.map((suggestion, index) => (
@@ -444,29 +507,214 @@ export default function CommandCenterPage() {
             />
             <div><span>O anti-ERP confirma antes de alteracoes importantes.</span><button type="submit" disabled={pending || !input.trim()} aria-label="Enviar comando">↑</button></div>
           </form>
-        </div>
+        </div> : null}
       </section>
 
       {showOnboarding ? (
-        <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
-          <div className="onboarding-card">
-            <span className="onboarding-mark">a</span>
-            <p className="onboarding-step">Boas-vindas ao anti-ERP</p>
-            <h2 id="onboarding-title">Voce nao precisa aprender um ERP.</h2>
-            <p>Conte o que deseja fazer. O anti-ERP entende sua intencao, valida os dados e pede confirmacao antes de agir.</p>
-            <div className="onboarding-example"><span className="typing-line">Crie um pedido para a Northstar com 10 notebooks.</span></div>
-            <div className="onboarding-flow"><span>Entender</span><i>→</i><span>Validar</span><i>→</i><span>Confirmar</span><i>→</i><span>Executar</span></div>
-            <div className="onboarding-actions"><button type="button" className="secondary-action" onClick={finishOnboarding}>Pular introducao</button><button type="button" className="primary-action" onClick={finishOnboarding}>Experimentar</button></div>
-          </div>
-        </div>
+        <OnboardingExperience
+          step={onboardingStep}
+          onBack={() => setOnboardingStep((current) => Math.max(current - 1, 0))}
+          onNext={() => setOnboardingStep((current) => Math.min(current + 1, 4))}
+          onSkip={() => finishOnboarding()}
+          onStart={() => finishOnboarding("Crie um pedido para a Northstar com 10 notebooks")}
+        />
       ) : null}
     </main>
   );
 }
 
+function CapabilitiesView({ onBack, onTry }: { onBack: () => void; onTry: (example: string) => void }) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase("pt-BR");
+  const visibleCapabilities = businessCapabilities.filter((capability) => {
+    if (!normalizedQuery) return true;
+    return `${capability.title} ${capability.description} ${capability.category} ${capability.keywords}`
+      .toLocaleLowerCase("pt-BR")
+      .includes(normalizedQuery);
+  });
+  const categories = [...new Set(visibleCapabilities.map((capability) => capability.category))];
+
+  return (
+    <section className="capabilities-view">
+      <div className="capabilities-heading">
+        <button type="button" className="secondary-action" onClick={onBack}>← Voltar à conversa</button>
+        <p>O que você pode pedir ao anti-ERP</p>
+        <h1>Descreva o resultado desejado.<br />O sistema encontra o caminho.</h1>
+        <span>Estas não são telas ou módulos. São capacidades empresariais que você pode acessar em linguagem natural.</span>
+      </div>
+
+      <label className="capability-search">
+        <UiIcon label="⌕" size={20} />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="O que você gostaria de fazer?" />
+        {query ? <button type="button" onClick={() => setQuery("")} aria-label="Limpar busca">×</button> : null}
+      </label>
+
+      <div className="capability-legend">
+        <span><i className="safe" /> Somente consulta</span>
+        <span><i className="controlled" /> Ação controlada</span>
+        <span><i className="confirmation" /> Requer confirmação</span>
+      </div>
+
+      {visibleCapabilities.length ? categories.map((category) => (
+        <section className="capability-group" key={category}>
+          <div><h2>{category}</h2><span>{visibleCapabilities.filter((item) => item.category === category).length} capacidades</span></div>
+          <div className="capability-grid">
+            {visibleCapabilities.filter((item) => item.category === category).map((capability) => (
+              <article className="capability-card" key={capability.id}>
+                <div className="capability-card-head">
+                  <span className={`capability-safety ${capability.safety === "Somente consulta" ? "safe" : capability.safety === "Requer confirmação" ? "confirmation" : "controlled"}`}>{capability.safety}</span>
+                  <span className={`capability-status ${capability.status === "Experimental" ? "experimental" : ""}`}>{capability.status}</span>
+                </div>
+                <h3>{capability.title}</h3>
+                <p>{capability.description}</p>
+                <blockquote>{capability.example}</blockquote>
+                <button type="button" onClick={() => onTry(capability.example)}>Experimentar →</button>
+              </article>
+            ))}
+          </div>
+        </section>
+      )) : (
+        <div className="capability-empty"><strong>Nenhuma capacidade encontrada.</strong><span>Tente buscar por pedido, estoque, desconto, cliente ou relatório.</span></div>
+      )}
+    </section>
+  );
+}
+
+const onboardingCards = [
+  {
+    eyebrow: "O custo invisível",
+    title: "Quanto tempo você já gastou aprendendo um sistema?",
+    description: "Menus, módulos, códigos, campos e sequências de passos. Para executar uma tarefa simples, primeiro você precisa aprender como o software foi organizado."
+  },
+  {
+    eyebrow: "O paradoxo",
+    title: "O usuário aprende o sistema. Mas o sistema não aprende o usuário.",
+    description: "Mesmo depois de anos de uso, a maioria dos softwares empresariais continua esperando que todas as pessoas trabalhem da mesma maneira."
+  },
+  {
+    eyebrow: "Inverta a relação",
+    title: "E se o sistema aprendesse a trabalhar com você?",
+    description: "Em vez de traduzir sua intenção para menus e formulários, o software poderia entender sua linguagem, suas preferências e a forma como sua empresa opera."
+  },
+  {
+    eyebrow: "Inteligência com controle",
+    title: "Um sistema inteligente também precisa saber quando perguntar.",
+    description: "O anti-ERP interpreta, consulta e prepara. Quando falta informação, pergunta. Quando a ação é importante, pede sua confirmação."
+  },
+  {
+    eyebrow: "Sua vez",
+    title: "Não procure uma função. Diga o que precisa acontecer.",
+    description: "Experimente falar com o anti-ERP como falaria com alguém da sua equipe."
+  }
+] as const;
+
+function OnboardingExperience({
+  step,
+  onBack,
+  onNext,
+  onSkip,
+  onStart
+}: {
+  step: number;
+  onBack: () => void;
+  onNext: () => void;
+  onSkip: () => void;
+  onStart: () => void;
+}) {
+  const card = onboardingCards[step] ?? onboardingCards[0];
+  const isLast = step === onboardingCards.length - 1;
+
+  return (
+    <div className="onboarding-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+      <div className="onboarding-card" key={step}>
+        <div className="onboarding-header">
+          <span className="onboarding-mark">a</span>
+          <span>{String(step + 1).padStart(2, "0")} de {String(onboardingCards.length).padStart(2, "0")}</span>
+        </div>
+        <div className="onboarding-progress" aria-label={`Etapa ${step + 1} de ${onboardingCards.length}`}>
+          {onboardingCards.map((item, index) => <i key={item.eyebrow} className={index <= step ? "active" : ""} />)}
+        </div>
+        <p className="onboarding-step">{card.eyebrow}</p>
+        <h2 id="onboarding-title">{card.title}</h2>
+        <p>{card.description}</p>
+
+        <div className="onboarding-stage">
+          {step === 0 ? <OnboardingCost /> : null}
+          {step === 1 ? <OnboardingParadox /> : null}
+          {step === 2 ? <OnboardingInversion /> : null}
+          {step === 3 ? <OnboardingControl /> : null}
+          {step === 4 ? <OnboardingInvitation /> : null}
+        </div>
+
+        <div className="onboarding-actions">
+          <button type="button" className="onboarding-skip" onClick={onSkip}>Pular introdução</button>
+          <div>
+            {step > 0 ? <button type="button" className="secondary-action" onClick={onBack}>← Voltar</button> : null}
+            <button type="button" className="primary-action" onClick={isLast ? onStart : onNext}>
+              {isLast ? "Começar com um exemplo" : "Continuar →"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OnboardingCost() {
+  return (
+    <div className="legacy-steps">
+      {["Vendas", "Pedidos", "Novo", "Cliente", "Itens", "Condição", "Salvar", "Faturar"].map((item, index) => (
+        <span key={item} style={{ animationDelay: `${index * 90}ms` }}>{item}{index < 7 ? " →" : ""}</span>
+      ))}
+      <strong>Por que todo esse caminho deveria ser responsabilidade do usuário?</strong>
+    </div>
+  );
+}
+
+function OnboardingParadox() {
+  return (
+    <div className="learning-comparison">
+      <div><strong>O usuário aprende</strong><span>✓ Onde cada função está</span><span>✓ Quais campos preencher</span><span>✓ Qual sequência seguir</span><span>✓ Quais códigos utilizar</span></div>
+      <div><strong>O sistema aprende</strong><span className="empty-learning">Ainda quase nada.</span></div>
+      <p>Na era da IA, isso ainda faz sentido?</p>
+    </div>
+  );
+}
+
+function OnboardingInversion() {
+  return (
+    <div className="model-comparison">
+      <div><small>ERP tradicional</small><p>Abrir módulo → localizar cliente → adicionar itens → validar estoque → salvar → faturar</p></div>
+      <div className="natural-command"><small>anti-ERP</small><p>“Crie um pedido para a Northstar com 10 notebooks e gere a nota.”</p></div>
+      <strong>A intenção é humana. A complexidade deveria ser do sistema.</strong>
+    </div>
+  );
+}
+
+function OnboardingControl() {
+  return (
+    <div className="control-demo">
+      <div className="onboarding-flow"><span>Entender</span><i>→</i><span>Validar</span><i>→</i><span>Perguntar</span><i>→</i><span className="highlight">Confirmar</span><i>→</i><span>Executar</span></div>
+      <p>“O pedido está pronto. Posso confirmar e reservar o estoque?”</p>
+      <strong>Menos passos não significa menos controle.</strong>
+    </div>
+  );
+}
+
+function OnboardingInvitation() {
+  return (
+    <div className="invitation-prompts">
+      <span>Crie um pedido para a Northstar com 10 notebooks.</span>
+      <span>Quais produtos estão com estoque baixo?</span>
+      <span>Quanto vendemos nos últimos 30 dias?</span>
+      <span>Gere um relatório executivo de faturamento.</span>
+      <strong>Você não deveria aprender um ERP.<br />Seu ERP deveria aprender você.</strong>
+    </div>
+  );
+}
+
 function DocumentWorkspace({
   analyticsResult,
-  audit,
   conversationContext,
   createInvoiceAfterConfirm,
   documentMessage,
@@ -474,7 +722,6 @@ function DocumentWorkspace({
   invoice,
   intelligentReport,
   managerialReport,
-  mcpTrace,
   order,
   pending,
   preview,
@@ -484,7 +731,6 @@ function DocumentWorkspace({
   onOpenDocumentDetail
 }: {
   analyticsResult: AnalyticsResult | null;
-  audit: AuditEvent[];
   conversationContext: ConversationContext;
   createInvoiceAfterConfirm: boolean;
   documentMessage: DocumentMessage | null;
@@ -492,7 +738,6 @@ function DocumentWorkspace({
   invoice: ConceptInvoice | null;
   intelligentReport: IntelligentReport | null;
   managerialReport: ManagerialReport | null;
-  mcpTrace: McpTrace;
   order: SalesOrder | null;
   pending: boolean;
   preview: SalesOrderPreview | null;
@@ -525,7 +770,7 @@ function DocumentWorkspace({
       {intelligentReport ? <IntelligentReportDocument report={intelligentReport} /> : null}
       {managerialReport ? <ManagerialReportDocument report={managerialReport} /> : null}
       {analyticsResult ? <ReportDocument result={analyticsResult} /> : null}
-      <OperationalFooter audit={audit} conversationContext={conversationContext} trace={mcpTrace} />
+      <OperationalFooter conversationContext={conversationContext} />
     </div>
   );
 }
@@ -1440,13 +1685,9 @@ function TraceSummary({ trace }: { trace: McpTrace }) {
 }
 
 function OperationalFooter({
-  audit,
-  conversationContext,
-  trace
+  conversationContext
 }: {
-  audit: AuditEvent[];
   conversationContext: ConversationContext;
-  trace: McpTrace;
 }) {
   return (
     <div className="operational-footer">
@@ -1464,32 +1705,6 @@ function OperationalFooter({
           />
           <Metric label="Documento" value={conversationContext.lastDocumentType ?? "-"} />
           <Metric label="Pendente" value={conversationContext.pendingConfirmation} />
-        </div>
-      </details>
-      <details>
-        <summary>Execucao MCP</summary>
-        {trace.length ? (
-          <div className="trace-list">
-            {trace.map((entry) => (
-              <div key={entry.id}>
-                <span>{entry.role}.{entry.tool}</span>
-                <strong>{entry.status} · {entry.durationMs}ms</strong>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p>Nenhuma chamada MCP registrada no ultimo comando.</p>
-        )}
-      </details>
-      <details>
-        <summary>Auditoria</summary>
-        <div className="audit-list">
-          {audit.slice(0, 8).map((event) => (
-            <div key={event.id}>
-              <span>{event.action}</span>
-              <p>{event.summary}</p>
-            </div>
-          ))}
         </div>
       </details>
     </div>
