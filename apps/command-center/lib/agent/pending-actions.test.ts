@@ -4,7 +4,7 @@ import { InMemoryPendingActionStore, PendingActionError } from "@anti-erp/capabi
 import { AgentConfirmRequestSchema, type AgentResponse } from "@anti-erp/shared";
 import { getPendingActionStore } from "../capabilities";
 import { demoCapabilityGateway as gateway } from "../capabilities/demo-gateway";
-import { runDirectAgent } from "./direct-agent";
+import { runAgent } from "./agent";
 import { ConfirmationBlockedError, confirmPendingAction } from "./pending-actions";
 
 process.env.CAPABILITY_GATEWAY = "demo";
@@ -30,7 +30,7 @@ async function createStockedProduct(unitPrice: number, availableStock: number) {
 }
 
 async function prepareOrder(customerName: string, productName: string, quantity: number) {
-  return runDirectAgent({ message: `Crie um pedido para ${customerName} com ${quantity} ${productName}` });
+  return runAgent({ message: `Crie um pedido para ${customerName} com ${quantity} ${productName}` });
 }
 
 // P0.1
@@ -124,7 +124,7 @@ test("expired action cannot be confirmed", async () => {
 test("ambiguous customer in a destructive command returns a question and writes nothing", async () => {
   const before = (await gateway.listCustomers()).map((customer) => [customer.id, customer.status]);
 
-  const response = await runDirectAgent({ message: "inative o cliente la" });
+  const response = await runAgent({ message: "inative o cliente la" });
 
   assert.equal(response.pendingAction, undefined);
   assert.equal(response.clarification?.kind, "customer");
@@ -146,15 +146,15 @@ test("destructive and sensitive commands only write after confirmation", async (
   const renamed = `Cliente Renomeado ${suffix()}`;
 
   const proposals = {
-    cancelOrder: await runDirectAgent({ message: `cancele o pedido ${order.id}` }),
-    duplicateOrder: await runDirectAgent({ message: `duplique o pedido ${order.id}` }),
-    discount: await runDirectAgent({ message: `aplique 10% de desconto no pedido ${order.id}` }),
-    cancelInvoice: await runDirectAgent({ message: `cancele a nota fiscal ${invoice.id}` }),
-    reissueInvoice: await runDirectAgent({ message: `reemita a nota fiscal ${invoice.id}` }),
-    price: await runDirectAgent({ message: `Atualize o preço do produto ${product.name} para 50 reais` }),
-    adjust: await runDirectAgent({ message: `ajuste o estoque do produto ${product.name} para 3 unidades` }),
-    deactivate: await runDirectAgent({ message: `inative o produto ${product.name}` }),
-    rename: await runDirectAgent({ message: `renomeie o cliente ${customer.name} para ${renamed}` })
+    cancelOrder: await runAgent({ message: `cancele o pedido ${order.id}` }),
+    duplicateOrder: await runAgent({ message: `duplique o pedido ${order.id}` }),
+    discount: await runAgent({ message: `aplique 10% de desconto no pedido ${order.id}` }),
+    cancelInvoice: await runAgent({ message: `cancele a nota fiscal ${invoice.id}` }),
+    reissueInvoice: await runAgent({ message: `reemita a nota fiscal ${invoice.id}` }),
+    price: await runAgent({ message: `Atualize o preço do produto ${product.name} para 50 reais` }),
+    adjust: await runAgent({ message: `ajuste o estoque do produto ${product.name} para 3 unidades` }),
+    deactivate: await runAgent({ message: `inative o produto ${product.name}` }),
+    rename: await runAgent({ message: `renomeie o cliente ${customer.name} para ${renamed}` })
   };
 
   assert.deepEqual(

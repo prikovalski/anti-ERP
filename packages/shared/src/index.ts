@@ -470,7 +470,9 @@ export const PendingActionPayloadSchema = z.discriminatedUnion("kind", [
     kind: z.literal("sales_order.create"),
     customerId: z.string(),
     lines: PrepareSalesOrderInputSchema.shape.lines,
-    subtotal: z.number().nonnegative()
+    subtotal: z.number().nonnegative(),
+    // Read by the agent from the message ("sem nota" -> false); the user can still change it on the card.
+    wantsInvoice: z.boolean().default(false)
   }),
   z.object({ kind: z.literal("sales_order.cancel"), salesOrderId: z.string() }),
   z.object({ kind: z.literal("sales_order.duplicate"), salesOrderId: z.string() }),
@@ -531,19 +533,21 @@ export const PendingActionSummarySchema = z.object({
   title: z.string(),
   summary: z.string(),
   details: z.array(z.string()),
-  expiresAt: z.string()
+  expiresAt: z.string(),
+  createInvoice: z.boolean().optional()
 });
 
+// The conversation context lives on the server; the browser only sends the session id it was given.
 export const AgentRequestSchema = z.object({
-  message: z.string().min(1),
-  lastOrderId: z.string().optional(),
-  conversationContext: ConversationContextSchema.optional()
+  message: z.string().min(1).max(2000),
+  sessionId: z.string().min(1).optional()
 });
 
 export const AgentConfirmRequestSchema = z.object({
   actionId: z.string().min(1),
-  createInvoice: z.boolean().default(false),
-  conversationContext: ConversationContextSchema.optional()
+  // Omitted: use what the agent read from the message.
+  createInvoice: z.boolean().optional(),
+  sessionId: z.string().min(1).optional()
 });
 
 export const AgentResponseSchema = z.object({
@@ -572,8 +576,10 @@ export const AgentResponseSchema = z.object({
       timestamp: z.string()
     })
   ).optional(),
-  mode: z.enum(["langgraph", "openrouter"]),
+  // deterministic: rules only; llm: the model's reading was used; fallback: the model was asked and failed.
+  mode: z.enum(["deterministic", "llm", "fallback"]),
   lastOrderId: z.string().nullable().optional(),
+  sessionId: z.string().optional(),
   conversationContext: ConversationContextSchema.optional()
 });
 

@@ -29,6 +29,8 @@ type ApiErrorResponse = {
 type DocumentDetailResponse = {
   order?: SalesOrder | null;
   invoice?: ConceptInvoice | null;
+  sessionId?: string;
+  conversationContext?: ConversationContext;
   message?: string;
 };
 
@@ -158,9 +160,10 @@ export default function CommandCenterPage() {
   const [executionPlan, setExecutionPlan] = useState<ExecutionPlan | null>(null);
   const [documentMessage, setDocumentMessage] = useState<DocumentMessage | null>(null);
   const [documentListBeforeDetail, setDocumentListBeforeDetail] = useState<DocumentMessage | null>(null);
-  const [lastOrderId, setLastOrderId] = useState<string | null>(null);
+  // The conversation memory lives on the server; this id is all the browser keeps.
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [conversationContext, setConversationContext] = useState<ConversationContext>(emptyConversationContext);
-  const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("langgraph");
+  const [agentMode, setAgentMode] = useState<AgentResponse["mode"]>("deterministic");
   const [mcpTrace, setMcpTrace] = useState<McpTrace>([]);
   const [createInvoiceAfterConfirm, setCreateInvoiceAfterConfirm] = useState(true);
   const [pending, setPending] = useState(false);
@@ -227,13 +230,16 @@ export default function CommandCenterPage() {
     setAgentMode(response.mode);
     setPreview(response.preview ?? null);
     setPendingAction(response.pendingAction ?? null);
+    if (response.pendingAction?.createInvoice !== undefined) {
+      setCreateInvoiceAfterConfirm(response.pendingAction.createInvoice);
+    }
     setOrder(response.order ?? order);
     setInvoice(response.invoice ?? invoice);
     setAnalyticsResult(response.analyticsResult ?? null);
     setManagerialReport(response.managerialReport ?? null);
     setIntelligentReport(response.intelligentReport ?? null);
     setExecutionPlan(response.executionPlan ?? null);
-    setLastOrderId(response.lastOrderId ?? lastOrderId);
+    setSessionId(response.sessionId ?? sessionId);
     setConversationContext(response.conversationContext ?? conversationContext);
     setMcpTrace(response.mcpTrace ?? []);
     setAudit((current) => [...response.auditEvents, ...current]);
@@ -258,7 +264,6 @@ export default function CommandCenterPage() {
       { id: `user_${Date.now()}`, role: "user", text: command }
     ]);
     setPending(true);
-    setCreateInvoiceAfterConfirm(/\b(nota|nf|invoice|fatura)\b/i.test(command));
     setPendingAction(null);
     setOrder(null);
     setInvoice(null);
@@ -279,8 +284,7 @@ export default function CommandCenterPage() {
         },
         body: JSON.stringify({
           message: command,
-          lastOrderId: lastOrderId ?? conversationContext.activeOrderId ?? undefined,
-          conversationContext
+          sessionId: sessionId ?? undefined
         })
       });
 
@@ -324,8 +328,8 @@ export default function CommandCenterPage() {
         },
         body: JSON.stringify({
           actionId: pendingAction.id,
-          createInvoice: pendingAction.kind === "sales_order.create" && createInvoiceAfterConfirm,
-          conversationContext
+          createInvoice: pendingAction.kind === "sales_order.create" ? createInvoiceAfterConfirm : undefined,
+          sessionId: sessionId ?? undefined
         })
       });
 
@@ -367,7 +371,8 @@ export default function CommandCenterPage() {
     setPending(true);
     setDocumentListBeforeDetail(documentMessage);
     try {
-      const response = await fetch(`/api/document-detail?type=${type}&id=${encodeURIComponent(id)}`);
+      const params = new URLSearchParams({ type, id, ...(sessionId ? { sessionId } : {}) });
+      const response = await fetch(`/api/document-detail?${params.toString()}`);
       const payload = (await response.json()) as DocumentDetailResponse;
 
       if (!response.ok) {
@@ -382,7 +387,8 @@ export default function CommandCenterPage() {
       setIntelligentReport(null);
       setExecutionPlan(null);
       setDocumentMessage(null);
-      setLastOrderId(payload.order?.id ?? payload.invoice?.salesOrderId ?? lastOrderId);
+      setSessionId(payload.sessionId ?? sessionId);
+      setConversationContext(payload.conversationContext ?? conversationContext);
     } catch (error) {
       setMessages((current) => [
         ...current,

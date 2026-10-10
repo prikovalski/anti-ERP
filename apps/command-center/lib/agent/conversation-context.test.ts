@@ -32,7 +32,7 @@ const preview: SalesOrderPreview = {
 
 test("evolveConversationContext stores active customer and pending preview", () => {
   const response: AgentResponse = {
-    mode: "langgraph",
+    mode: "deterministic",
     preview,
     message: {
       id: "msg_1",
@@ -58,7 +58,7 @@ test("evolveConversationContext stores active customer and pending preview", () 
 
 test("evolveContextFromPreviewConfirmation stores confirmed order and invoice", () => {
   const response: AgentResponse = {
-    mode: "langgraph",
+    mode: "deterministic",
     order: {
       ...preview,
       id: "SO-1001",

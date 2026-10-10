@@ -3,7 +3,7 @@ import { AgentConfirmRequestSchema, AgentResponseSchema } from "@anti-erp/shared
 import { NextResponse } from "next/server";
 import { evolveContextFromPreviewConfirmation, evolveConversationContext } from "@/lib/agent/conversation-context";
 import { ConfirmationBlockedError, confirmPendingAction } from "@/lib/agent/pending-actions";
-import { getCapabilityGateway, getPendingActionStore } from "@/lib/capabilities";
+import { getCapabilityGateway, getConversationSessionStore, getPendingActionStore } from "@/lib/capabilities";
 import { recordAgentStep, withMcpTrace } from "@/lib/observability/mcp-trace";
 import { createObservedCapabilityGateway } from "@/lib/observability/observed-gateway";
 
@@ -34,13 +34,15 @@ export async function POST(request: Request) {
   const body = parsed.data;
 
   try {
+    const sessions = await getConversationSessionStore();
+    const session = await sessions.load(body.sessionId);
     const { result, trace } = await withMcpTrace(
       {
         name: "agent.confirm_action",
         inputs: {
           actionId: body.actionId,
-          createInvoice: body.createInvoice,
-          hasConversationContext: Boolean(body.conversationContext)
+          createInvoice: body.createInvoice ?? null,
+          resumedSession: session.id === body.sessionId
         },
         tags: ["confirmation"]
       },
@@ -49,7 +51,7 @@ export async function POST(request: Request) {
           name: "user_confirmation_received",
           status: "success",
           durationMs: 0,
-          outputs: { actionId: body.actionId, createInvoice: body.createInvoice }
+          outputs: { actionId: body.actionId, createInvoice: body.createInvoice ?? null }
         });
         return confirmPendingAction({
           actionId: body.actionId,
@@ -61,9 +63,10 @@ export async function POST(request: Request) {
     );
     const { response, preview } = result;
     const conversationContext = preview
-      ? evolveContextFromPreviewConfirmation({ current: body.conversationContext, preview, response })
-      : evolveConversationContext({ current: body.conversationContext, response });
-    return NextResponse.json(AgentResponseSchema.parse({ ...response, mcpTrace: trace, conversationContext }));
+      ? evolveContextFromPreviewConfirmation({ current: session.context, preview, response })
+      : evolveConversationContext({ current: session.context, response });
+    await sessions.save({ id: session.id, context: conversationContext });
+    return NextResponse.json(AgentResponseSchema.parse({ ...response, mcpTrace: trace, sessionId: session.id, conversationContext }));
   } catch (error) {
     if (error instanceof PendingActionError) {
       return NextResponse.json({ error: error.code, message: error.message }, { status: pendingActionStatus[error.code] });

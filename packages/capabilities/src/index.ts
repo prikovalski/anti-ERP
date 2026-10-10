@@ -1,5 +1,11 @@
 export { PrismaCapabilityGateway } from "./prisma-gateway";
 export {
+  CONVERSATION_SESSION_TTL_MS,
+  InMemoryConversationSessionStore,
+  PrismaConversationSessionStore
+} from "./conversation-sessions";
+export type { ConversationSession, ConversationSessionStore } from "./conversation-sessions";
+export {
   InMemoryPendingActionStore,
   PENDING_ACTION_TTL_MS,
   PendingActionError,

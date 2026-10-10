@@ -145,7 +145,7 @@ pnpm db:push
 
 The app never seeds data on its own. On an empty database, run `pnpm db:seed` once to insert the demo customers and products; it only creates missing records and never overwrites existing ones. Do not run seed against a shared or already-populated database unless you have reviewed the seed script.
 
-Run `pnpm db:push` again after pulling schema changes, such as the `PendingAction` table used by confirmations.
+Run `pnpm db:push` again after pulling schema changes, such as the `PendingAction` table used by confirmations and the `ConversationSession` table that keeps conversation memory on the server.
 
 ## Run locally
 
