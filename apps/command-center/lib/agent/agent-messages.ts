@@ -1,4 +1,4 @@
-import type { InventoryMovement, SalesOrder, SalesOrderStatus } from "@anti-erp/shared";
+import type { ConceptInvoice, ConceptInvoiceStatus, InventoryMovement, SalesOrder, SalesOrderStatus } from "@anti-erp/shared";
 
 // User-facing Portuguese texts shared by the agent routes and the confirmation executor.
 
@@ -74,4 +74,24 @@ export function formatPercent(value: number) {
     minimumFractionDigits: value % 1 === 0 ? 0 : 2,
     maximumFractionDigits: 2
   }).format(value)}%`;
+}
+
+export function formatDate(value: string) {
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+export function translateInvoiceStatus(status: ConceptInvoiceStatus) {
+  return status === "canceled" ? "cancelada" : status === "reissued" ? "reemitida" : "emitida";
+}
+
+export function describeInvoice(invoice: ConceptInvoice) {
+  const changed = invoice.orderChangedAfterIssue ? " O pedido foi alterado apos a emissao; reemissao recomendada." : "";
+  return `Nota fiscal ${invoice.id} do pedido ${invoice.salesOrderId}: ${translateInvoiceStatus(invoice.status)}, cliente ${invoice.customerName}, valor ${formatMoney(invoice.amount)}, emitida em ${formatDate(invoice.issuedAt)}.${changed}`;
+}
+
+export function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
 }

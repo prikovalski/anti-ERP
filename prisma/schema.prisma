@@ -127,6 +127,17 @@ model PendingAction {
   @@index([status, expiresAt])
 }
 
+// Conversation memory (active order, customer, products). The browser only holds the session id.
+model ConversationSession {
+  id        String   @id
+  context   Json
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
 model McpCallLog {
   id            String   @id @default(cuid())
   requestId     String

@@ -39,7 +39,8 @@ export async function proposeAction(
     title: input.title,
     summary: input.summary,
     details: input.details ?? [],
-    expiresAt: record.expiresAt.toISOString()
+    expiresAt: record.expiresAt.toISOString(),
+    ...(input.payload.kind === "sales_order.create" ? { createInvoice: input.payload.wantsInvoice } : {})
   };
 }
 
@@ -49,7 +50,8 @@ export async function proposeAction(
  */
 export async function confirmPendingAction(input: {
   actionId: string;
-  createInvoice: boolean;
+  /** Overrides the invoice choice the agent read from the message. */
+  createInvoice?: boolean;
   gateway: CapabilityGateway;
   store: PendingActionStore;
 }): Promise<{ response: AgentResponse; preview: SalesOrderPreview | null }> {
@@ -60,7 +62,8 @@ export async function confirmPendingAction(input: {
 
   await input.store.claim(record.id);
   try {
-    const result = await execute(input.gateway, record, input.createInvoice);
+    const createInvoice = input.createInvoice ?? (record.payload.kind === "sales_order.create" && record.payload.wantsInvoice);
+    const result = await execute(input.gateway, record, createInvoice);
     await input.store.finish(record.id, { status: "completed", resultRef: result.resultRef });
     return { response: result.response, preview };
   } catch (error) {
@@ -102,7 +105,7 @@ async function execute(
     }
     case "sales_order.cancel": {
       const order = await gateway.cancelSalesOrder({ salesOrderId: payload.salesOrderId });
-      return done(`Pedido ${order.id} cancelado. O estoque dos itens foi recomposto.`, payload, order.id, {
+      return done(await describeCancellation(gateway, order.id), payload, order.id, {
         order,
         lastOrderId: order.id
       });
@@ -190,6 +193,26 @@ async function execute(
   }
 }
 
+/** Reports what cancellation did to stock and invoices, read back from the ledger instead of assumed. */
+async function describeCancellation(gateway: CapabilityGateway, salesOrderId: string) {
+  const [releases, writeOffs, issuedInvoices] = await Promise.all([
+    gateway.listInventoryMovements({ salesOrderId, type: "reservation_release", take: 100 }),
+    gateway.listInventoryMovements({ salesOrderId, type: "order_writeoff", take: 1 }),
+    gateway.listConceptInvoices({ salesOrderId, status: "issued", take: 10 })
+  ]);
+  const parts = [`Pedido ${salesOrderId} cancelado.`];
+  if (writeOffs.length) {
+    parts.push("O estoque ja tinha sido baixado pela nota fiscal e nao foi devolvido.");
+  } else if (releases.length) {
+    const units = releases.reduce((sum, movement) => sum + movement.quantity, 0);
+    parts.push(`A reserva de ${units} unidade(s) foi liberada.`);
+  }
+  if (issuedInvoices.length) {
+    parts.push(`A nota fiscal ${issuedInvoices.map((invoice) => invoice.id).join(", ")} continua emitida; cancele-a se for o caso.`);
+  }
+  return parts.join(" ");
+}
+
 function done(
   text: string,
   payload: PendingActionPayload,
@@ -199,7 +222,7 @@ function done(
   return {
     resultRef,
     response: {
-      mode: "langgraph",
+      mode: "deterministic",
       message: { id: createId("msg"), role: "agent", text },
       auditEvents: [audit(payload.kind, text)],
       ...extra
@@ -214,7 +237,7 @@ function failedResponse(payload: PendingActionPayload, error: unknown): AgentRes
       ? formatInventoryError(error)
       : `Nao consegui concluir a operacao confirmada: ${error instanceof Error ? error.message : "erro desconhecido"}`;
   return {
-    mode: "langgraph",
+    mode: "deterministic",
     message: { id: createId("msg"), role: "agent", text },
     auditEvents: [audit(`${payload.kind}.failed`, text)]
   };

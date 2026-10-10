@@ -38,7 +38,7 @@ export async function confirmSalesOrder(
     : null;
 
   return {
-    mode: "langgraph",
+    mode: "deterministic",
     order,
     invoice,
     message: {

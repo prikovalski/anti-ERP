@@ -51,7 +51,7 @@ test("createProductDisambiguation is valid in AgentResponseSchema", () => {
   ]);
 
   const parsed = AgentResponseSchema.parse({
-    mode: "langgraph",
+    mode: "deterministic",
     message: {
       id: "msg_test",
       role: "agent",
