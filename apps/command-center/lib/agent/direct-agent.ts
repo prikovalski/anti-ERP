@@ -13,16 +13,35 @@ import type {
   ListSalesOrdersInput,
   ManagerialReport,
   ManagerialReportKind,
+  PendingActionPayload,
   Product,
   SalesOrder,
   SalesOrderStatus,
   Supplier
 } from "@anti-erp/shared";
-import { getCapabilityGateway } from "../capabilities";
+import { getCapabilityGateway, getPendingActionStore } from "../capabilities";
 import { recordAgentStep } from "../observability/mcp-trace";
 import { createObservedCapabilityGateway } from "../observability/observed-gateway";
+import {
+  describeOrder,
+  formatDiscountError,
+  formatInventoryError,
+  formatInventoryMovement,
+  formatMoney,
+  formatPercent,
+  translateInventoryMovementType,
+  translateStatus
+} from "./agent-messages";
 import { buildClarifyingFallbackQuestion } from "./clarifying-fallback";
+import {
+  describeClarification,
+  resolveCustomer,
+  resolveProduct,
+  resolveSupplier,
+  type EntityResolution
+} from "./entity-resolution";
 import { parseIntentLocally } from "./intent-parser";
+import { proposeAction } from "./pending-actions";
 import { buildSemanticPlan, type SemanticPlan } from "./semantic-plan";
 
 function id(prefix: string) {
@@ -50,6 +69,33 @@ function response(text: string, extra: Partial<AgentResponse> = {}): AgentRespon
     mode: "langgraph",
     ...extra
   };
+}
+
+/** Writes never run from a chat message: they become a pending action the user confirms in /api/agent/confirm. */
+async function proposalResponse(input: {
+  payload: PendingActionPayload;
+  title: string;
+  summary: string;
+  details?: string[];
+  extra?: Partial<AgentResponse>;
+}) {
+  const pendingAction = await proposeAction(await getPendingActionStore(), input);
+  await recordDirectDecision("confirmation_required", { kind: input.payload.kind, actionId: pendingAction.id });
+  return response(`${input.summary} Confirme para executar.`, {
+    pendingAction,
+    auditEvents: [audit("confirmation_required", `Aguardando confirmacao: ${input.title}.`)],
+    ...input.extra
+  });
+}
+
+function unresolvedResponse(resolution: Exclude<EntityResolution<unknown>, { status: "resolved" }>, label: string, query: string) {
+  if (resolution.status === "ambiguous") {
+    return response(describeClarification(resolution.clarification), {
+      clarification: resolution.clarification,
+      auditEvents: [audit("clarification_required", `Mais de um ${label} encontrado para "${query}".`)]
+    });
+  }
+  return response(`Nao encontrei o ${label} ${query}.`);
 }
 
 async function runIntelligentReport(
@@ -130,28 +176,40 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       catalogKind: explicitCatalogCommand.kind,
       status: explicitCatalogCommand.status
     });
+    const query = explicitCatalogCommand.query;
+    const activate = explicitCatalogCommand.status === "active";
+    const verb = activate ? "Ativar" : "Inativar";
     if (explicitCatalogCommand.kind === "product") {
-      const product = (await gateway.searchProduct({ query: explicitCatalogCommand.query }))[0];
-      if (!product) return response(`Nao encontrei o produto ${explicitCatalogCommand.query}.`);
-      const updated = await gateway.updateProduct({ productId: product.id, status: explicitCatalogCommand.status === "active" ? "active" : "inactive" });
-      return response(`Produto ${updated.name} ${updated.status === "active" ? "ativado" : "inativado"} com sucesso.`, {
-        auditEvents: [audit("update_product", `Status atualizado: ${updated.name}.`)]
+      const resolution = await resolveProduct(gateway, query);
+      if (resolution.status !== "resolved") return unresolvedResponse(resolution, "produto", query);
+      const product = resolution.entity;
+      return proposalResponse({
+        payload: { kind: "product.update", productId: product.id, status: activate ? "active" : "inactive" },
+        title: `${verb} produto`,
+        summary: `${verb} o produto ${product.name} (${product.sku}).`,
+        details: [`Status atual: ${product.status === "active" ? "ativo" : "inativo"}`]
       });
     }
     if (explicitCatalogCommand.kind === "supplier") {
-      const supplier = (await gateway.searchSupplier({ query: explicitCatalogCommand.query }))[0];
-      if (!supplier) return response(`Nao encontrei o fornecedor ${explicitCatalogCommand.query}.`);
-      const updated = await gateway.updateSupplier({ supplierId: supplier.id, status: explicitCatalogCommand.status });
-      return response(`Fornecedor ${updated.name} ${updated.status === "active" ? "ativado" : "inativado"} com sucesso.`, {
-        auditEvents: [audit("update_supplier", `Status atualizado: ${updated.name}.`)]
+      const resolution = await resolveSupplier(gateway, query);
+      if (resolution.status !== "resolved") return unresolvedResponse(resolution, "fornecedor", query);
+      const supplier = resolution.entity;
+      return proposalResponse({
+        payload: { kind: "supplier.update", supplierId: supplier.id, status: explicitCatalogCommand.status },
+        title: `${verb} fornecedor`,
+        summary: `${verb} o fornecedor ${supplier.name}.`,
+        details: [`Status atual: ${supplier.status === "active" ? "ativo" : "inativo"}`]
       });
     }
     if (explicitCatalogCommand.kind === "customer") {
-      const customer = (await gateway.searchCustomer({ query: explicitCatalogCommand.query }))[0];
-      if (!customer) return response(`Nao encontrei o cliente ${explicitCatalogCommand.query}.`);
-      const updated = await gateway.updateCustomer({ customerId: customer.id, status: explicitCatalogCommand.status });
-      return response(`Cliente ${updated.name} ${updated.status === "active" ? "ativado" : "inativado"} com sucesso.`, {
-        auditEvents: [audit("update_customer", `Status atualizado: ${updated.name}.`)]
+      const resolution = await resolveCustomer(gateway, query);
+      if (resolution.status !== "resolved") return unresolvedResponse(resolution, "cliente", query);
+      const customer = resolution.entity;
+      return proposalResponse({
+        payload: { kind: "customer.update", customerId: customer.id, status: explicitCatalogCommand.status },
+        title: `${verb} cliente`,
+        summary: `${verb} o cliente ${customer.name} (${customer.taxId}).`,
+        details: [`Status atual: ${customer.status === "active" ? "ativo" : "bloqueado"}`, `Cidade: ${customer.city}`]
       });
     }
   }
@@ -162,23 +220,37 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       action: explicitCatalogCommand.action,
       catalogKind: explicitCatalogCommand.kind
     });
+    const query = explicitCatalogCommand.query;
+    const nextName = explicitCatalogCommand.nextName;
     if (explicitCatalogCommand.kind === "product") {
-      const product = (await gateway.searchProduct({ query: explicitCatalogCommand.query }))[0];
-      if (!product) return response(`Nao encontrei o produto ${explicitCatalogCommand.query}.`);
-      const updated = await gateway.updateProduct({ productId: product.id, name: explicitCatalogCommand.nextName });
-      return response(`Produto renomeado para ${updated.name}.`, { auditEvents: [audit("update_product", `Produto renomeado: ${updated.name}.`)] });
+      const resolution = await resolveProduct(gateway, query);
+      if (resolution.status !== "resolved") return unresolvedResponse(resolution, "produto", query);
+      const product = resolution.entity;
+      return proposalResponse({
+        payload: { kind: "product.update", productId: product.id, name: nextName },
+        title: "Renomear produto",
+        summary: `Renomear o produto ${product.name} para ${nextName}.`
+      });
     }
     if (explicitCatalogCommand.kind === "supplier") {
-      const supplier = (await gateway.searchSupplier({ query: explicitCatalogCommand.query }))[0];
-      if (!supplier) return response(`Nao encontrei o fornecedor ${explicitCatalogCommand.query}.`);
-      const updated = await gateway.updateSupplier({ supplierId: supplier.id, name: explicitCatalogCommand.nextName });
-      return response(`Fornecedor renomeado para ${updated.name}.`, { auditEvents: [audit("update_supplier", `Fornecedor renomeado: ${updated.name}.`)] });
+      const resolution = await resolveSupplier(gateway, query);
+      if (resolution.status !== "resolved") return unresolvedResponse(resolution, "fornecedor", query);
+      const supplier = resolution.entity;
+      return proposalResponse({
+        payload: { kind: "supplier.update", supplierId: supplier.id, name: nextName },
+        title: "Renomear fornecedor",
+        summary: `Renomear o fornecedor ${supplier.name} para ${nextName}.`
+      });
     }
     if (explicitCatalogCommand.kind === "customer") {
-      const customer = (await gateway.searchCustomer({ query: explicitCatalogCommand.query }))[0];
-      if (!customer) return response(`Nao encontrei o cliente ${explicitCatalogCommand.query}.`);
-      const updated = await gateway.updateCustomer({ customerId: customer.id, name: explicitCatalogCommand.nextName });
-      return response(`Cliente renomeado para ${updated.name}.`, { auditEvents: [audit("update_customer", `Cliente renomeado: ${updated.name}.`)] });
+      const resolution = await resolveCustomer(gateway, query);
+      if (resolution.status !== "resolved") return unresolvedResponse(resolution, "cliente", query);
+      const customer = resolution.entity;
+      return proposalResponse({
+        payload: { kind: "customer.update", customerId: customer.id, name: nextName },
+        title: "Renomear cliente",
+        summary: `Renomear o cliente ${customer.name} para ${nextName}.`
+      });
     }
   }
 
@@ -201,11 +273,13 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     }
 
     if (explicitInventoryCommand.action === "history") {
-      const product = explicitInventoryCommand.productQuery
-        ? await resolveProductByQuery(gateway, explicitInventoryCommand.productQuery)
-        : null;
-      if (explicitInventoryCommand.productQuery && !product) {
-        return response(`Nao encontrei o produto ${explicitInventoryCommand.productQuery}.`);
+      let product: Product | null = null;
+      if (explicitInventoryCommand.productQuery) {
+        const resolution = await resolveProduct(gateway, explicitInventoryCommand.productQuery);
+        if (resolution.status !== "resolved") {
+          return unresolvedResponse(resolution, "produto", explicitInventoryCommand.productQuery);
+        }
+        product = resolution.entity;
       }
       const filters: ListInventoryMovementsInput = {
         productId: product?.id ?? null,
@@ -258,15 +332,24 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     if (!explicitInventoryCommand.productQuery) {
       return response("Qual produto devo movimentar no estoque?");
     }
-    const product = await resolveProductByQuery(gateway, explicitInventoryCommand.productQuery);
-    if (!product) {
-      return response(`Nao encontrei o produto ${explicitInventoryCommand.productQuery}.`);
+    const resolution = await resolveProduct(gateway, explicitInventoryCommand.productQuery);
+    if (resolution.status !== "resolved") {
+      return unresolvedResponse(resolution, "produto", explicitInventoryCommand.productQuery);
     }
+    const product = resolution.entity;
     if (explicitInventoryCommand.quantity == null) {
       return response(`Qual quantidade devo usar para movimentar o estoque de ${product.name}?`);
     }
 
     const reason = explicitInventoryReason(explicitInventoryCommand.action, input.message);
+    if (explicitInventoryCommand.action === "adjustment") {
+      return proposalResponse({
+        payload: { kind: "inventory.adjust", productId: product.id, quantity: explicitInventoryCommand.quantity, reason },
+        title: "Ajustar estoque",
+        summary: `Ajustar o estoque disponivel de ${product.name} (${product.sku}) de ${product.availableStock} para ${explicitInventoryCommand.quantity} unidade(s).`,
+        details: [`Reservado: ${product.reservedStock ?? 0}`, `Motivo: ${reason}`]
+      });
+    }
     let movement: InventoryMovement;
     try {
       movement =
@@ -274,21 +357,19 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
           ? await gateway.createInventoryEntry({ productId: product.id, quantity: explicitInventoryCommand.quantity, reason })
           : explicitInventoryCommand.action === "exit"
             ? await gateway.createInventoryExit({ productId: product.id, quantity: explicitInventoryCommand.quantity, reason })
-            : explicitInventoryCommand.action === "adjustment"
-              ? await gateway.adjustInventory({ productId: product.id, quantity: explicitInventoryCommand.quantity, reason })
-              : explicitInventoryCommand.action === "reservation"
-                ? await gateway.reserveInventory({
-                  productId: product.id,
-                  quantity: explicitInventoryCommand.quantity,
-                  salesOrderId: explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null,
-                  reason
-                })
-                : await gateway.releaseInventoryReservation({
-                  productId: product.id,
-                  quantity: explicitInventoryCommand.quantity,
-                  salesOrderId: explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null,
-                  reason
-                });
+            : explicitInventoryCommand.action === "reservation"
+              ? await gateway.reserveInventory({
+                productId: product.id,
+                quantity: explicitInventoryCommand.quantity,
+                salesOrderId: explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null,
+                reason
+              })
+              : await gateway.releaseInventoryReservation({
+                productId: product.id,
+                quantity: explicitInventoryCommand.quantity,
+                salesOrderId: explicitInventoryCommand.salesOrderId ?? input.lastOrderId ?? null,
+                reason
+              });
     } catch (error) {
       return response(formatInventoryError(error));
     }
@@ -338,11 +419,15 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       action: explicitInvoiceCommand.action,
       invoiceId: explicitInvoiceCommand.invoiceId
     });
-    const invoice = await gateway.cancelConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
-    return response(`Nota fiscal conceitual ${invoice.id} cancelada.`, {
-      invoice,
-      lastOrderId: invoice.salesOrderId,
-      auditEvents: [audit("cancel_concept_invoice", `Nota fiscal cancelada: ${invoice.id}.`)]
+    const invoice = await gateway.getConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
+    if (!invoice) {
+      return response(`Nao encontrei a nota fiscal ${explicitInvoiceCommand.invoiceId}.`);
+    }
+    return proposalResponse({
+      payload: { kind: "invoice.cancel", invoiceId: invoice.id },
+      title: "Cancelar nota fiscal",
+      summary: `Cancelar a nota fiscal conceitual ${invoice.id} do pedido ${invoice.salesOrderId} (${invoice.customerName}, ${formatMoney(invoice.amount)}).`,
+      extra: { invoice, lastOrderId: invoice.salesOrderId }
     });
   }
   if (explicitInvoiceCommand.action === "reissue" && explicitInvoiceCommand.invoiceId) {
@@ -351,11 +436,15 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       action: explicitInvoiceCommand.action,
       invoiceId: explicitInvoiceCommand.invoiceId
     });
-    const invoice = await gateway.reissueConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
-    return response(`Nota fiscal ${explicitInvoiceCommand.invoiceId} reemitida como ${invoice.id}.`, {
-      invoice,
-      lastOrderId: invoice.salesOrderId,
-      auditEvents: [audit("reissue_concept_invoice", `Nota fiscal reemitida: ${explicitInvoiceCommand.invoiceId} -> ${invoice.id}.`)]
+    const invoice = await gateway.getConceptInvoice({ invoiceId: explicitInvoiceCommand.invoiceId });
+    if (!invoice) {
+      return response(`Nao encontrei a nota fiscal ${explicitInvoiceCommand.invoiceId}.`);
+    }
+    return proposalResponse({
+      payload: { kind: "invoice.reissue", invoiceId: invoice.id },
+      title: "Reemitir nota fiscal",
+      summary: `Reemitir a nota fiscal conceitual ${invoice.id} do pedido ${invoice.salesOrderId}. A nota atual sera substituida.`,
+      extra: { invoice, lastOrderId: invoice.salesOrderId }
     });
   }
   if (explicitInvoiceCommand.action === "list") {
@@ -385,48 +474,69 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
     if (!currentOrder) {
       return response(`Nao encontrei o pedido ${salesOrderId}. Qual pedido deve receber o desconto?`);
     }
-    const currentDiscount = calculateOrderDiscount(currentOrder);
-    if (currentDiscount.amount > 0 && !hasExplicitDiscountConfirmation(input.message)) {
-      return response(
-        `Esse pedido ja possui desconto acumulado de ${formatMoney(currentDiscount.amount)} (${formatPercent(currentDiscount.percent)}). Voce confirma aplicar um novo desconto sobre o total atual? Para confirmar, envie: "confirmo aplicar ${formatDiscountCommandValue(explicitDiscountCommand)} no pedido ${salesOrderId}".`,
-        {
-          order: currentOrder,
-          lastOrderId: currentOrder.id,
-          auditEvents: [audit("discount_confirmation_required", `Pedido ${salesOrderId} ja possui desconto acumulado.`)]
-        }
-      );
+    if (currentOrder.status === "canceled") {
+      return response(`O pedido ${currentOrder.id} esta cancelado e nao pode receber desconto.`, {
+        order: currentOrder,
+        lastOrderId: currentOrder.id
+      });
     }
 
     let productId: string | null = null;
     let productName: string | null = null;
     if (explicitDiscountCommand.productQuery) {
-      const product = await resolveProductByQuery(gateway, explicitDiscountCommand.productQuery);
-      if (!product) {
-        return response(`Nao encontrei o produto ${explicitDiscountCommand.productQuery}. Qual item do pedido deve receber o desconto?`);
+      // Only items already in the order are candidates, so "monitor" cannot hit a product outside it.
+      const query = normalizeText(explicitDiscountCommand.productQuery);
+      const orderLines = currentOrder.lines.filter((line) =>
+        normalizeText(line.name).includes(query) || normalizeText(line.sku).includes(query)
+      );
+      if (!orderLines.length) {
+        return response(`Nao encontrei ${explicitDiscountCommand.productQuery} entre os itens do pedido ${currentOrder.id}. Qual item deve receber o desconto?`);
       }
-      productId = product.id;
-      productName = product.name;
+      if (orderLines.length > 1) {
+        return response(`Mais de um item do pedido ${currentOrder.id} corresponde a "${explicitDiscountCommand.productQuery}": ${orderLines.map((line) => line.name).join("; ")}. Qual deles deve receber o desconto?`);
+      }
+      productId = orderLines[0]!.productId;
+      productName = orderLines[0]!.name;
     }
 
-    try {
-      const order = await gateway.applySalesOrderDiscount({
-        salesOrderId,
+    const targetTotal = roundMoney(currentOrder.lines
+      .filter((line) => !productId || line.productId === productId)
+      .reduce((sum, line) => sum + line.total, 0));
+    const discountAmount = explicitDiscountCommand.discountType === "percent"
+      ? roundMoney(targetTotal * (explicitDiscountCommand.value / 100))
+      : explicitDiscountCommand.value;
+    if (explicitDiscountCommand.discountType === "percent" && explicitDiscountCommand.value > 100) {
+      return response(formatDiscountError(new Error("Discount percent cannot be greater than 100.")));
+    }
+    if (discountAmount > targetTotal) {
+      return response(formatDiscountError(new Error("Discount cannot be greater than the selected total.")));
+    }
+
+    const currentDiscount = calculateOrderDiscount(currentOrder);
+    const discountLabel = explicitDiscountCommand.discountType === "percent"
+      ? `${explicitDiscountCommand.value}%`
+      : formatMoney(explicitDiscountCommand.value);
+    const scope = productName ? `no item ${productName}` : "no pedido todo";
+    return proposalResponse({
+      payload: {
+        kind: "sales_order.discount",
+        salesOrderId: currentOrder.id,
         productId,
+        productName,
         discountType: explicitDiscountCommand.discountType,
         value: explicitDiscountCommand.value
-      });
-      const discountLabel = explicitDiscountCommand.discountType === "percent"
-        ? `${explicitDiscountCommand.value}%`
-        : formatMoney(explicitDiscountCommand.value);
-      const scope = productName ? `no item ${productName}` : "no pedido todo";
-      return response(`Apliquei desconto de ${discountLabel} ${scope}. ${describeOrder(order)}`, {
-        order,
-        lastOrderId: order.id,
-        auditEvents: [audit("apply_sales_order_discount", `Desconto aplicado no pedido ${order.id}.`)]
-      });
-    } catch (error) {
-      return response(formatDiscountError(error));
-    }
+      },
+      title: "Aplicar desconto",
+      summary: `Aplicar desconto de ${discountLabel} ${scope} do pedido ${currentOrder.id} (${formatMoney(discountAmount)}).`,
+      details: [
+        `Total atual: ${formatMoney(currentOrder.subtotal)}`,
+        `Total apos o desconto: ${formatMoney(roundMoney(currentOrder.subtotal - discountAmount))}`,
+        ...(currentDiscount.amount > 0
+          ? [`Este pedido ja tem desconto acumulado de ${formatMoney(currentDiscount.amount)} (${formatPercent(currentDiscount.percent)}).`]
+          : [])
+      ],
+      extra: { order: currentOrder, lastOrderId: currentOrder.id }
+    });
   }
 
   const explicitOrderCommand = parseExplicitOrderCommand(input.message);
@@ -454,11 +564,19 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       action: explicitOrderCommand.action,
       salesOrderId: explicitOrderCommand.salesOrderId
     });
-    const order = await gateway.cancelSalesOrder({ salesOrderId: explicitOrderCommand.salesOrderId });
-    return response(`Pedido ${order.id} cancelado. O estoque dos itens foi recomposto.`, {
-      order,
-      lastOrderId: order.id,
-      auditEvents: [audit("cancel_sales_order", `Pedido cancelado: ${order.id}.`)]
+    const order = await gateway.getSalesOrder({ salesOrderId: explicitOrderCommand.salesOrderId });
+    if (!order) {
+      return response(`Nao encontrei o pedido ${explicitOrderCommand.salesOrderId}.`);
+    }
+    if (order.status === "canceled") {
+      return response(`O pedido ${order.id} ja esta cancelado.`, { order, lastOrderId: order.id });
+    }
+    return proposalResponse({
+      payload: { kind: "sales_order.cancel", salesOrderId: order.id },
+      title: "Cancelar pedido",
+      summary: `Cancelar o pedido ${order.id} de ${order.customer.name} (${formatMoney(order.subtotal)}).`,
+      details: order.lines.map((line) => `${line.quantity}x ${line.name}`),
+      extra: { order, lastOrderId: order.id }
     });
   }
 
@@ -468,11 +586,16 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       action: explicitOrderCommand.action,
       salesOrderId: explicitOrderCommand.salesOrderId
     });
-    const order = await gateway.duplicateSalesOrder({ salesOrderId: explicitOrderCommand.salesOrderId });
-    return response(`Pedido ${explicitOrderCommand.salesOrderId} duplicado como ${order.id}.`, {
-      order,
-      lastOrderId: order.id,
-      auditEvents: [audit("duplicate_sales_order", `Pedido duplicado: ${explicitOrderCommand.salesOrderId} -> ${order.id}.`)]
+    const order = await gateway.getSalesOrder({ salesOrderId: explicitOrderCommand.salesOrderId });
+    if (!order) {
+      return response(`Nao encontrei o pedido ${explicitOrderCommand.salesOrderId}.`);
+    }
+    return proposalResponse({
+      payload: { kind: "sales_order.duplicate", salesOrderId: order.id },
+      title: "Duplicar pedido",
+      summary: `Criar um novo pedido para ${order.customer.name} com os mesmos itens do pedido ${order.id}, reservando o estoque.`,
+      details: order.lines.map((line) => `${line.quantity}x ${line.name}`),
+      extra: { order, lastOrderId: order.id }
     });
   }
 
@@ -623,18 +746,29 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       route: "product_update",
       intent: intent.intent
     });
-    const matches = await gateway.searchProduct({ query: intent.productUpdate.productQuery });
-    const product = matches[0];
-    if (!product) {
-      return response(`Nao encontrei o produto ${intent.productUpdate.productQuery}.`);
+    const productUpdate = intent.productUpdate;
+    const productQuery = intent.productUpdate.productQuery;
+    const resolution = await resolveProduct(gateway, productQuery);
+    if (resolution.status !== "resolved") {
+      return unresolvedResponse(resolution, "produto", productQuery);
     }
-    const updated = await gateway.updateProduct({
-      productId: product.id,
-      unitPrice: intent.productUpdate.unitPrice,
-      availableStock: intent.productUpdate.availableStock
-    });
-    return response(`Produto ${updated.name} atualizado com sucesso.`, {
-      auditEvents: [audit("update_product", `Produto atualizado: ${updated.name}.`)]
+    const product = resolution.entity;
+    const changes = [
+      productUpdate.unitPrice != null ? `preco ${formatMoney(product.unitPrice)} -> ${formatMoney(productUpdate.unitPrice)}` : null,
+      productUpdate.availableStock != null ? `estoque disponivel ${product.availableStock} -> ${productUpdate.availableStock}` : null
+    ].filter((change): change is string => Boolean(change));
+    if (!changes.length) {
+      return response(`O que devo alterar no produto ${product.name}: preco ou estoque?`);
+    }
+    return proposalResponse({
+      payload: {
+        kind: "product.update",
+        productId: product.id,
+        unitPrice: productUpdate.unitPrice ?? null,
+        availableStock: productUpdate.availableStock ?? null
+      },
+      title: "Atualizar produto",
+      summary: `Atualizar o produto ${product.name} (${product.sku}): ${changes.join("; ")}.`
     });
   }
 
@@ -654,11 +788,11 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       return response("Qual pedido devo alterar? Informe o numero do pedido ou use o pedido criado anteriormente.");
     }
 
-    const products = await gateway.searchProduct({ query: intent.productQuery });
-    const product = products[0];
-    if (!product) {
-      return response(`Nao encontrei o produto ${intent.productQuery}.`);
+    const resolution = await resolveProduct(gateway, intent.productQuery);
+    if (resolution.status !== "resolved") {
+      return unresolvedResponse(resolution, "produto", intent.productQuery);
     }
+    const product = resolution.entity;
 
     const quantity = intent.quantity ?? intent.orderLines?.[0]?.quantity ?? 1;
     const order =
@@ -688,30 +822,7 @@ export async function runDirectAgent(input: { message: string; lastOrderId?: str
       customerQuery: intent.customerQuery,
       lineCount: intent.orderLines.length
     });
-    const customers = await gateway.searchCustomer({ query: intent.customerQuery });
-    const customer = customers[0];
-    if (!customer) {
-      return response(`Nao encontrei o cliente ${intent.customerQuery}.`);
-    }
-
-    const lines = [];
-    for (const line of intent.orderLines) {
-      const products = await gateway.searchProduct({ query: line.productQuery });
-      const product = products[0];
-      if (!product) {
-        return response(`Nao encontrei o produto ${line.productQuery}.`);
-      }
-      lines.push({ productId: product.id, quantity: line.quantity });
-    }
-
-    const preview = await gateway.prepareSalesOrder({
-      customerId: customer.id,
-      lines
-    });
-    return response(`Preparei o pedido para ${customer.name}. Confira os itens e confirme para gravar.`, {
-      preview,
-      auditEvents: [audit("prepare_sales_order", `Pedido preparado para ${customer.name}.`)]
-    });
+    return prepareSalesOrderProposal(gateway, intent.customerQuery, intent.orderLines, "prepare_sales_order");
   }
 
   await recordDirectDecision("direct_route_selected", {
@@ -732,31 +843,48 @@ async function executeSemanticSalesOrderPlan(gateway: ReturnType<typeof createOb
     return response("Quais itens devo incluir no pedido?");
   }
 
-  const customers = await gateway.searchCustomer({ query: customerName });
-  const customer = customers[0];
-  if (!customer) {
-    return response(`Nao encontrei o cliente ${customerName}.`);
+  return prepareSalesOrderProposal(
+    gateway,
+    customerName,
+    plan.entities.items.map((item) => ({ productQuery: item.product, quantity: item.quantity })),
+    "semantic_prepare_sales_order"
+  );
+}
+
+async function prepareSalesOrderProposal(
+  gateway: ReturnType<typeof createObservedCapabilityGateway>,
+  customerQuery: string,
+  items: Array<{ productQuery: string; quantity: number }>,
+  auditAction: string
+) {
+  const customerResolution = await resolveCustomer(gateway, customerQuery);
+  if (customerResolution.status !== "resolved") {
+    return unresolvedResponse(customerResolution, "cliente", customerQuery);
   }
+  const customer = customerResolution.entity;
 
   const lines = [];
-  for (const item of plan.entities.items) {
-    const products = await gateway.searchProduct({ query: item.product });
-    const product = products[0];
-    if (!product) {
-      return response(`Nao encontrei o produto ${item.product}.`);
+  for (const item of items) {
+    const productResolution = await resolveProduct(gateway, item.productQuery);
+    if (productResolution.status !== "resolved") {
+      return unresolvedResponse(productResolution, "produto", item.productQuery);
     }
-    lines.push({ productId: product.id, quantity: item.quantity });
+    lines.push({ productId: productResolution.entity.id, quantity: item.quantity });
   }
 
-  const preview = await gateway.prepareSalesOrder({
-    customerId: customer.id,
-    lines
+  const preview = await gateway.prepareSalesOrder({ customerId: customer.id, lines });
+  const text = `Preparei o pedido para ${customer.name}. Confira os itens e confirme para gravar.`;
+  const auditEvents = [audit(auditAction, `Pedido preparado para ${customer.name}.`)];
+  if (preview.warnings.length) {
+    // Nothing can be confirmed while warnings exist, so no pending action is created.
+    return response(text, { preview, auditEvents });
+  }
+  const pendingAction = await proposeAction(await getPendingActionStore(), {
+    payload: { kind: "sales_order.create", customerId: customer.id, lines, subtotal: preview.subtotal },
+    title: "Criar pedido de venda",
+    summary: `Criar pedido para ${customer.name} com ${lines.length} item(ns), total ${formatMoney(preview.subtotal)}.`
   });
-
-  return response(`Preparei o pedido para ${customer.name}. Confira os itens e confirme para gravar.`, {
-    preview,
-    auditEvents: [audit("semantic_prepare_sales_order", `Pedido preparado por plano semantico para ${customer.name}.`)]
-  });
+  return response(text, { preview, pendingAction, auditEvents });
 }
 
 async function recordDirectDecision(name: string, outputs: Record<string, unknown>) {
@@ -898,10 +1026,6 @@ function explicitInventoryReason(action: NonNullable<ReturnType<typeof parseExpl
   return "Movimentacao de estoque por comando em linguagem natural";
 }
 
-async function resolveProductByQuery(gateway: Awaited<ReturnType<typeof getCapabilityGateway>>, query: string) {
-  const matches = await gateway.searchProduct({ query });
-  return matches[0] ?? null;
-}
 
 function parseExplicitOrderCommand(message: string): {
   action: "get" | "cancel" | "duplicate" | "list" | null;
@@ -953,10 +1077,6 @@ function parseExplicitDiscountCommand(message: string): {
   };
 }
 
-function hasExplicitDiscountConfirmation(message: string) {
-  const normalized = normalizeText(message);
-  return /\b(confirmo|confirmar|confirmado|pode aplicar|aplique mesmo|aplicar mesmo|sim[, ]+aplique|sim[, ]+confirmo)\b/.test(normalized);
-}
 
 function calculateOrderDiscount(order: SalesOrder) {
   const originalSubtotal = roundMoney(order.lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0));
@@ -965,9 +1085,6 @@ function calculateOrderDiscount(order: SalesOrder) {
   return { originalSubtotal, amount, percent };
 }
 
-function formatDiscountCommandValue(command: NonNullable<ReturnType<typeof parseExplicitDiscountCommand>>) {
-  return command.discountType === "percent" ? `${command.value}% de desconto` : `${formatMoney(command.value)} de desconto`;
-}
 
 function extractDiscountPercent(message: string) {
   const normalized = normalizeText(message);
@@ -1316,12 +1433,6 @@ function formatOrderListScope(filters: ListSalesOrdersInput) {
   ].filter(Boolean).join(", ");
 }
 
-function describeOrder(order: SalesOrder) {
-  const items = order.lines
-    .map((line) => `${line.quantity}x ${line.name} (${formatMoney(line.total)})`)
-    .join("; ");
-  return `Pedido ${order.id} para ${order.customer.name}: ${translateStatus(order.status)}, ${items}, total ${formatMoney(order.subtotal)}.`;
-}
 
 function formatInvoiceList(invoices: ConceptInvoice[], filters: ListConceptInvoicesInput) {
   if (!invoices.length) {
@@ -1373,9 +1484,6 @@ function formatInventoryPositionList(products: Product[]) {
     .join("\n")}`;
 }
 
-function formatInventoryMovement(movement: InventoryMovement) {
-  return `Movimentacao de estoque registrada: ${movement.productName} (${movement.sku}), ${translateInventoryMovementType(movement.type)}, quantidade ${movement.quantity}, disponivel ${movement.previousAvailableStock} -> ${movement.nextAvailableStock}, reservado ${movement.previousReservedStock} -> ${movement.nextReservedStock}.`;
-}
 
 function formatInventoryMovementList(movements: InventoryMovement[], filters: ListInventoryMovementsInput) {
   if (!movements.length) {
@@ -1399,17 +1507,6 @@ function formatInventoryMovementItems(movements: InventoryMovement[]) {
     .join("; ");
 }
 
-function translateInventoryMovementType(type: InventoryMovement["type"]) {
-  const labels: Record<InventoryMovement["type"], string> = {
-    entry: "entrada",
-    exit: "saida",
-    adjustment: "ajuste manual",
-    reservation: "reserva",
-    reservation_release: "liberacao de reserva",
-    order_writeoff: "baixa por pedido"
-  };
-  return labels[type];
-}
 
 function isManagerialReportRequest(message: string) {
   const normalized = normalizeText(message);
@@ -1446,38 +1543,7 @@ function formatIntelligentReportAnswer(report: IntelligentReport) {
   return `${report.title}: ${report.summary}${insight}`;
 }
 
-function formatInventoryError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Erro desconhecido.";
-  const stockMatch = message.match(/has only\s+(\d+)\s+(?:units available|reserved units)/i);
-  if (/insufficient stock/i.test(message) || /units available/i.test(message)) {
-    return stockMatch
-      ? `Nao executei a movimentacao porque o estoque disponivel e ${stockMatch[1]} unidade(s).`
-      : "Nao executei a movimentacao porque nao ha estoque disponivel suficiente.";
-  }
-  if (/reserved units/i.test(message)) {
-    return stockMatch
-      ? `Nao executei a liberacao porque existem apenas ${stockMatch[1]} unidade(s) reservada(s).`
-      : "Nao executei a liberacao porque a reserva disponivel e insuficiente.";
-  }
-  return `Nao consegui movimentar o estoque: ${message}`;
-}
 
-function formatDiscountError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Erro desconhecido.";
-  if (/greater than 100/i.test(message)) {
-    return "O percentual de desconto nao pode ser maior que 100%. Qual desconto devo aplicar?";
-  }
-  if (/greater than the selected total/i.test(message)) {
-    return "O desconto informado e maior que o total selecionado. Qual valor de desconto devo aplicar?";
-  }
-  if (/not in sales order/i.test(message)) {
-    return "Esse item nao esta no pedido. Qual item deve receber o desconto?";
-  }
-  if (/not found/i.test(message)) {
-    return "Nao encontrei o pedido ou item informado para aplicar o desconto. Qual pedido e item devo usar?";
-  }
-  return `Nao consegui aplicar o desconto: ${message}`;
-}
 
 function describeInvoice(invoice: ConceptInvoice) {
   const changed = invoice.orderChangedAfterIssue ? " O pedido foi alterado apos a emissao; reemissao recomendada." : "";
@@ -1495,9 +1561,6 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
-function translateStatus(status: SalesOrderStatus) {
-  return status === "canceled" ? "cancelado" : status === "draft" ? "rascunho" : "confirmado";
-}
 
 function translateDateRange(dateRange: AnalyticsDateRange) {
   return dateRange === "today"
@@ -1567,23 +1630,11 @@ function inferGroupBy(message: string): AnalyticsGroupBy | null {
   return null;
 }
 
-function formatMoney(value: number) {
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL"
-  }).format(value);
-}
 
 function roundMoney(value: number) {
   return Math.round(value * 100) / 100;
 }
 
-function formatPercent(value: number) {
-  return `${new Intl.NumberFormat("pt-BR", {
-    minimumFractionDigits: value % 1 === 0 ? 0 : 2,
-    maximumFractionDigits: 2
-  }).format(value)}%`;
-}
 
 function formatAnalyticsValue(metric: AnalyticsMetric, value: number) {
   return metric === "revenue" ? formatMoney(value) : String(value);

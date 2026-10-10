@@ -42,7 +42,7 @@ export function evolveConversationContext(input: {
         ?? []
     ),
     lastDocumentType: inferDocumentType(input.response),
-    pendingConfirmation: preview ? "sales_order" : "none",
+    pendingConfirmation: preview ? "sales_order" : input.response.pendingAction ? "action" : "none",
     lastUserCommand: input.userCommand ?? current.lastUserCommand,
     lastAgentSummary: summarizeAgentMessage(input.response.message.text)
   };

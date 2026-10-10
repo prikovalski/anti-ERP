@@ -9,6 +9,7 @@ import type {
   ExecutionPlan,
   IntelligentReport,
   ManagerialReport,
+  PendingActionSummary,
   SalesOrder,
   SalesOrderPreview
 } from "@anti-erp/shared";
@@ -148,6 +149,7 @@ export default function CommandCenterPage() {
     }
   ]);
   const [preview, setPreview] = useState<SalesOrderPreview | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingActionSummary | null>(null);
   const [order, setOrder] = useState<SalesOrder | null>(null);
   const [invoice, setInvoice] = useState<ConceptInvoice | null>(null);
   const [analyticsResult, setAnalyticsResult] = useState<AnalyticsResult | null>(null);
@@ -224,6 +226,7 @@ export default function CommandCenterPage() {
     }
     setAgentMode(response.mode);
     setPreview(response.preview ?? null);
+    setPendingAction(response.pendingAction ?? null);
     setOrder(response.order ?? order);
     setInvoice(response.invoice ?? invoice);
     setAnalyticsResult(response.analyticsResult ?? null);
@@ -256,6 +259,7 @@ export default function CommandCenterPage() {
     ]);
     setPending(true);
     setCreateInvoiceAfterConfirm(/\b(nota|nf|invoice|fatura)\b/i.test(command));
+    setPendingAction(null);
     setOrder(null);
     setInvoice(null);
     setAnalyticsResult(null);
@@ -305,35 +309,40 @@ export default function CommandCenterPage() {
     }
   }
 
-  async function confirmPreview() {
-    if (!preview) {
+  async function confirmPendingAction() {
+    if (!pendingAction || pending) {
       return;
     }
 
     setPending(true);
     try {
+      // Only the server-side action id is sent: prices, customer and quantities are re-read on the server.
       const response = await fetch("/api/agent/confirm", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          preview,
-          createInvoice: createInvoiceAfterConfirm,
+          actionId: pendingAction.id,
+          createInvoice: pendingAction.kind === "sales_order.create" && createInvoiceAfterConfirm,
           conversationContext
         })
       });
 
       if (!response.ok) {
+        if (response.status >= 400 && response.status < 500) {
+          setPendingAction(null);
+        }
         throw new Error(await readApiError(response, `Confirm request failed with ${response.status}`));
       }
 
       setAudit((current) => [
-        createAudit("user_approval", "User explicitly confirmed the sales order preview.", "user"),
+        createAudit("user_approval", `User explicitly confirmed: ${pendingAction.title}.`, "user"),
         ...current
       ]);
       applyAgentResponse((await response.json()) as AgentResponse);
       setPreview(null);
+      setPendingAction(null);
     } catch (error) {
       setMessages((current) => [
         ...current,
@@ -342,11 +351,11 @@ export default function CommandCenterPage() {
           role: "agent",
           text: error instanceof Error
             ? error.message
-            : "Nao consegui confirmar o pedido agora. Nenhuma criacao foi aplicada."
+            : "Nao consegui confirmar a operacao agora."
         }
       ]);
       setAudit((current) => [
-        createAudit("confirmation_failed", "The confirmation request failed before creating a sales order.", "system"),
+        createAudit("confirmation_failed", "The confirmation request failed.", "system"),
         ...current
       ]);
     } finally {
@@ -396,7 +405,7 @@ export default function CommandCenterPage() {
   }
 
   const hasWorkspaceContent = Boolean(
-    preview || order || invoice || analyticsResult || managerialReport || intelligentReport || executionPlan || documentMessage
+    preview || pendingAction || order || invoice || analyticsResult || managerialReport || intelligentReport || executionPlan || documentMessage
   );
 
   return (
@@ -470,9 +479,11 @@ export default function CommandCenterPage() {
               managerialReport={managerialReport}
               order={order}
               pending={pending}
+              pendingAction={pendingAction}
               preview={preview}
               setCreateInvoiceAfterConfirm={setCreateInvoiceAfterConfirm}
-              onConfirmPreview={confirmPreview}
+              onConfirmPendingAction={confirmPendingAction}
+              onDismissPendingAction={() => setPendingAction(null)}
               onOpenDocumentDetail={openDocumentDetail}
               onBackToList={documentListBeforeDetail ? backToDocumentList : undefined}
             />
@@ -724,10 +735,12 @@ function DocumentWorkspace({
   managerialReport,
   order,
   pending,
+  pendingAction,
   preview,
   setCreateInvoiceAfterConfirm,
   onBackToList,
-  onConfirmPreview,
+  onConfirmPendingAction,
+  onDismissPendingAction,
   onOpenDocumentDetail
 }: {
   analyticsResult: AnalyticsResult | null;
@@ -740,14 +753,16 @@ function DocumentWorkspace({
   managerialReport: ManagerialReport | null;
   order: SalesOrder | null;
   pending: boolean;
+  pendingAction: PendingActionSummary | null;
   preview: SalesOrderPreview | null;
   setCreateInvoiceAfterConfirm: (value: boolean) => void;
   onBackToList?: () => void;
-  onConfirmPreview: () => void;
+  onConfirmPendingAction: () => void;
+  onDismissPendingAction: () => void;
   onOpenDocumentDetail: (type: "order" | "invoice", id: string) => void;
 }) {
-  const hasDocument = Boolean(preview || order || invoice || analyticsResult || managerialReport || intelligentReport || executionPlan || documentMessage);
-  const showGenericDocument = Boolean(documentMessage && !preview && !order && !invoice && !analyticsResult && !managerialReport && !intelligentReport && !executionPlan);
+  const hasDocument = Boolean(preview || pendingAction || order || invoice || analyticsResult || managerialReport || intelligentReport || executionPlan || documentMessage);
+  const showGenericDocument = Boolean(documentMessage && !preview && !pendingAction && !order && !invoice && !analyticsResult && !managerialReport && !intelligentReport && !executionPlan);
 
   return (
     <div className="document-scroll">
@@ -756,13 +771,22 @@ function DocumentWorkspace({
         <GenericResultDocument document={documentMessage} onOpenDocumentDetail={onOpenDocumentDetail} />
       ) : null}
       {executionPlan ? <ExecutionPlanDocument plan={executionPlan} /> : null}
+      {pendingAction && pendingAction.kind !== "sales_order.create" ? (
+        <PendingActionDocument
+          action={pendingAction}
+          pending={pending}
+          onConfirm={onConfirmPendingAction}
+          onDismiss={onDismissPendingAction}
+        />
+      ) : null}
       {preview ? (
         <SalesOrderDocument
+          canConfirm={pendingAction?.kind === "sales_order.create"}
           createInvoiceAfterConfirm={createInvoiceAfterConfirm}
           pending={pending}
           preview={preview}
           setCreateInvoiceAfterConfirm={setCreateInvoiceAfterConfirm}
-          onConfirmPreview={onConfirmPreview}
+          onConfirmPreview={onConfirmPendingAction}
         />
       ) : null}
       {order ? <ConfirmedOrderDocument invoice={invoice} order={order} onBackToList={onBackToList} /> : null}
@@ -941,13 +965,57 @@ function ExecutionPlanDocument({ plan }: { plan: ExecutionPlan }) {
   );
 }
 
+function PendingActionDocument({
+  action,
+  pending,
+  onConfirm,
+  onDismiss
+}: {
+  action: PendingActionSummary;
+  pending: boolean;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <article className="document-card">
+      <DocumentTitle
+        icon={<UiIcon label="!" size={20} />}
+        kicker="Confirmacao"
+        title={action.title}
+        status="Aguardando confirmacao"
+      />
+      <p className="result-summary">{action.summary}</p>
+      {action.details.length ? (
+        <div className="result-list">
+          {action.details.map((detail) => (
+            <div key={detail}>
+              <span>{detail}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="document-actions">
+        <button type="button" className="secondary-action" disabled={pending} onClick={onDismiss}>
+          Descartar
+        </button>
+        <button type="button" className="primary-action" disabled={pending} onClick={onConfirm}>
+          <UiIcon label="OK" size={18} />
+          Confirmar
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function SalesOrderDocument({
+  canConfirm,
   createInvoiceAfterConfirm,
   pending,
   preview,
   setCreateInvoiceAfterConfirm,
   onConfirmPreview
 }: {
+  canConfirm: boolean;
   createInvoiceAfterConfirm: boolean;
   pending: boolean;
   preview: SalesOrderPreview;
@@ -1001,7 +1069,7 @@ function SalesOrderDocument({
       </div>
 
       <div className="document-actions">
-        <button type="button" className="primary-action" disabled={pending || blocked} onClick={onConfirmPreview}>
+        <button type="button" className="primary-action" disabled={pending || blocked || !canConfirm} onClick={onConfirmPreview}>
           <UiIcon label="OK" size={18} />
           Confirmar pedido
         </button>

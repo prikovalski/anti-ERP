@@ -4,6 +4,7 @@ import type {
   AnalyticsMetric,
   AnalyticsResult,
   ConceptInvoice,
+  CreateSalesOrderInput,
   Customer,
   IntelligentReport,
   InventoryMovement,
@@ -77,10 +78,7 @@ export interface CapabilityGateway {
     customerId: string;
     lines: Array<{ productId: string; quantity: number }>;
   }): Promise<SalesOrderPreview>;
-  createSalesOrder(input: {
-    preview: SalesOrderPreview;
-    confirmedByUser: true;
-  }): Promise<SalesOrder>;
+  createSalesOrder(input: CreateSalesOrderInput): Promise<SalesOrder>;
   addSalesOrderLine(input: {
     salesOrderId: string;
     productId: string;

@@ -1,12 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { AgentResponse } from "@anti-erp/shared";
 import { parseIntentLocally } from "./intent-parser";
 import { runDirectAgent } from "./direct-agent";
+import { confirmPendingAction } from "./pending-actions";
 import { buildLocalSemanticPlan } from "./semantic-plan";
+import { getPendingActionStore } from "../capabilities";
 import { demoCapabilityGateway } from "../capabilities/demo-gateway";
 
 process.env.CAPABILITY_GATEWAY = "demo";
 process.env.LANGSMITH_TRACING = "false";
+
+async function confirm(response: AgentResponse) {
+  assert.ok(response.pendingAction, `expected a pending confirmation, got: ${response.message.text}`);
+  const { response: confirmed } = await confirmPendingAction({
+    actionId: response.pendingAction.id,
+    createInvoice: false,
+    gateway: demoCapabilityGateway,
+    store: await getPendingActionStore()
+  });
+  return confirmed;
+}
 
 test("parser understands natural Portuguese variations for sales orders", () => {
   const scenarios = [
@@ -192,9 +206,14 @@ test("direct agent treats catalog delete language as safe product deactivation",
   await demoCapabilityGateway.createProduct({ name: productName });
 
   const response = await runDirectAgent({ message: `exclua o produto ${productName}` });
+  const [beforeConfirmation] = await demoCapabilityGateway.searchProduct({ query: productName });
+  assert.equal(response.pendingAction?.kind, "product.update");
+  assert.equal(beforeConfirmation?.status, "active");
+
+  const confirmed = await confirm(response);
   const [product] = await demoCapabilityGateway.searchProduct({ query: productName });
 
-  assert.match(response.message.text, /Produto .* inativado com sucesso\./);
+  assert.match(confirmed.message.text, /Produto .* inativado com sucesso\./);
   assert.equal(product?.status, "inactive");
 });
 
@@ -221,28 +240,27 @@ test("direct agent applies discounts to the whole order or a specific item", asy
     customerId: customer.id,
     lines: [{ productId: monitor.id, quantity: 2 }]
   });
-  const wholeOrder = await demoCapabilityGateway.createSalesOrder({ preview: wholeOrderPreview, confirmedByUser: true });
+  const wholeOrder = await demoCapabilityGateway.createSalesOrder({ customerId: wholeOrderPreview.customer.id, lines: wholeOrderPreview.lines, confirmedByUser: true });
   const wholeOrderSubtotal = wholeOrder.subtotal;
-  const wholeDiscount = await runDirectAgent({
+  const wholeDiscountProposal = await runDirectAgent({
     message: "aplique 10% de desconto no pedido",
     lastOrderId: wholeOrder.id
   });
+  assert.equal(wholeDiscountProposal.pendingAction?.kind, "sales_order.discount");
+  assert.equal(wholeDiscountProposal.order?.subtotal, wholeOrderSubtotal);
 
+  const wholeDiscount = await confirm(wholeDiscountProposal);
   assert.equal(wholeDiscount.order?.subtotal, wholeOrderSubtotal * 0.9);
   assert.match(wholeDiscount.message.text, /desconto de 10% no pedido todo/i);
 
-  const blockedSecondDiscount = await runDirectAgent({
+  const secondDiscountProposal = await runDirectAgent({
     message: "aplique 10% de desconto no pedido",
     lastOrderId: wholeOrder.id
   });
-  assert.match(blockedSecondDiscount.message.text, /ja possui desconto acumulado/i);
-  assert.match(blockedSecondDiscount.message.text, /confirma aplicar um novo desconto/i);
-  assert.equal(blockedSecondDiscount.order?.subtotal, wholeOrderSubtotal * 0.9);
+  assert.ok(secondDiscountProposal.pendingAction?.details.some((detail) => /ja tem desconto acumulado/i.test(detail)));
+  assert.equal(secondDiscountProposal.order?.subtotal, wholeOrderSubtotal * 0.9);
 
-  const confirmedSecondDiscount = await runDirectAgent({
-    message: "confirmo aplicar 10% de desconto no pedido",
-    lastOrderId: wholeOrder.id
-  });
+  const confirmedSecondDiscount = await confirm(secondDiscountProposal);
   assert.equal(confirmedSecondDiscount.order?.subtotal, wholeOrderSubtotal * 0.81);
 
   const itemPreview = await demoCapabilityGateway.prepareSalesOrder({
@@ -252,13 +270,13 @@ test("direct agent applies discounts to the whole order or a specific item", asy
       { productId: notebook.id, quantity: 1 }
     ]
   });
-  const itemOrder = await demoCapabilityGateway.createSalesOrder({ preview: itemPreview, confirmedByUser: true });
+  const itemOrder = await demoCapabilityGateway.createSalesOrder({ customerId: itemPreview.customer.id, lines: itemPreview.lines, confirmedByUser: true });
   const originalMonitorTotal = itemOrder.lines.find((line) => line.productId === monitor.id)!.total;
   const originalNotebookTotal = itemOrder.lines.find((line) => line.productId === notebook.id)!.total;
-  const itemDiscount = await runDirectAgent({
+  const itemDiscount = await confirm(await runDirectAgent({
     message: "de 100 reais de desconto no item monitor do pedido",
     lastOrderId: itemOrder.id
-  });
+  }));
   const discountedMonitor = itemDiscount.order?.lines.find((line) => line.productId === monitor.id);
   const unchangedNotebook = itemDiscount.order?.lines.find((line) => line.productId === notebook.id);
 
@@ -282,8 +300,8 @@ test("direct agent filters listed orders by customer name after 'pedidos de'", a
     customerId: northstar.id,
     lines: [{ productId: monitor.id, quantity: 1 }]
   });
-  const joaoOrder = await demoCapabilityGateway.createSalesOrder({ preview: joaoPreview, confirmedByUser: true });
-  const northstarOrder = await demoCapabilityGateway.createSalesOrder({ preview: northstarPreview, confirmedByUser: true });
+  const joaoOrder = await demoCapabilityGateway.createSalesOrder({ customerId: joaoPreview.customer.id, lines: joaoPreview.lines, confirmedByUser: true });
+  const northstarOrder = await demoCapabilityGateway.createSalesOrder({ customerId: northstarPreview.customer.id, lines: northstarPreview.lines, confirmedByUser: true });
 
   const response = await runDirectAgent({ message: `liste todos os pedidos de Joao Silva ${suffix}` });
 

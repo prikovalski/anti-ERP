@@ -20,31 +20,6 @@ function json(value: unknown) {
   };
 }
 
-const CustomerSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  taxId: z.string(),
-  city: z.string(),
-  status: z.enum(["active", "blocked"])
-});
-
-const SalesOrderLineSchema = z.object({
-  productId: z.string(),
-  sku: z.string(),
-  name: z.string(),
-  quantity: z.number().int().positive(),
-  unitPrice: z.number().nonnegative(),
-  total: z.number().nonnegative()
-});
-
-const SalesOrderPreviewSchema = z.object({
-  customer: CustomerSchema,
-  lines: z.array(SalesOrderLineSchema),
-  subtotal: z.number().nonnegative(),
-  warnings: z.array(z.string()),
-  confirmationRequired: z.literal(true)
-});
-
 server.tool(
   "prepare_sales_order",
   {
@@ -62,7 +37,13 @@ server.tool(
 server.tool(
   "create_sales_order",
   {
-    preview: SalesOrderPreviewSchema,
+    customerId: z.string(),
+    lines: z.array(
+      z.object({
+        productId: z.string(),
+        quantity: z.number().int().positive()
+      })
+    ).min(1),
     confirmedByUser: z.literal(true)
   },
   async (input) => json(await gateway.createSalesOrder(input))

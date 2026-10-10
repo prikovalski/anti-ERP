@@ -85,6 +85,8 @@ anti-erp/
 
 Key rule: `prepare_sales_order` only creates a preview. `create_sales_order` requires explicit user confirmation.
 
+Every write the agent proposes from a chat message (creating, canceling or duplicating an order, discounts, canceling or reissuing an invoice, renaming or deactivating catalog records, changing price or stock, manual stock adjustments) is stored as a pending action. It runs only when the user confirms it through `/api/agent/confirm`, which receives the action id alone: prices, customer status and stock are re-read on the server, and each action runs at most once.
+
 ## Capability gateway
 
 The Command Center talks to capabilities through a gateway interface. For the current public demo posture, use Prisma with Neon/Postgres:
@@ -141,7 +143,9 @@ pnpm db:generate
 pnpm db:push
 ```
 
-Run `pnpm db:seed` only when you intentionally want to insert demo data. Do not run seed against a shared or already-populated database unless you have reviewed the seed script.
+The app never seeds data on its own. On an empty database, run `pnpm db:seed` once to insert the demo customers and products; it only creates missing records and never overwrites existing ones. Do not run seed against a shared or already-populated database unless you have reviewed the seed script.
+
+Run `pnpm db:push` again after pulling schema changes, such as the `PendingAction` table used by confirmations.
 
 ## Run locally
 

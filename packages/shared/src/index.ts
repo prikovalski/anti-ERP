@@ -217,8 +217,8 @@ export const PrepareSalesOrderInputSchema = z.object({
   ).min(1)
 });
 
-export const CreateSalesOrderInputSchema = z.object({
-  preview: SalesOrderPreviewSchema,
+// Prices, totals and customer status are always re-read by the gateway; the caller only sends what was confirmed.
+export const CreateSalesOrderInputSchema = PrepareSalesOrderInputSchema.extend({
   confirmedByUser: z.literal(true)
 });
 
@@ -424,7 +424,7 @@ export const ConversationContextSchema = z.object({
   activeCustomer: ConversationEntitySchema.nullable().default(null),
   activeProducts: z.array(ConversationEntitySchema).default([]),
   lastDocumentType: z.enum(["sales_order_preview", "sales_order", "invoice", "report", "catalog", "plan", "message"]).nullable().default(null),
-  pendingConfirmation: z.enum(["sales_order", "invoice", "none"]).default("none"),
+  pendingConfirmation: z.enum(["sales_order", "invoice", "action", "none"]).default("none"),
   lastUserCommand: z.string().nullable().default(null),
   lastAgentSummary: z.string().nullable().default(null)
 });
@@ -456,10 +456,82 @@ export const ClarificationOptionSchema = z.object({
 });
 
 export const ClarificationRequestSchema = z.object({
-  kind: z.enum(["customer", "product"]),
+  kind: z.enum(["customer", "product", "supplier"]),
   query: z.string(),
   question: z.string(),
   options: z.array(ClarificationOptionSchema).min(2)
+});
+
+const CatalogStatusSchema = z.enum(["active", "inactive", "blocked"]);
+
+// A write the agent prepared but that only runs after the user confirms it through /api/agent/confirm.
+export const PendingActionPayloadSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("sales_order.create"),
+    customerId: z.string(),
+    lines: PrepareSalesOrderInputSchema.shape.lines,
+    subtotal: z.number().nonnegative()
+  }),
+  z.object({ kind: z.literal("sales_order.cancel"), salesOrderId: z.string() }),
+  z.object({ kind: z.literal("sales_order.duplicate"), salesOrderId: z.string() }),
+  z.object({
+    kind: z.literal("sales_order.discount"),
+    salesOrderId: z.string(),
+    productId: z.string().nullable(),
+    productName: z.string().nullable(),
+    discountType: z.enum(["percent", "amount"]),
+    value: z.number().positive()
+  }),
+  z.object({ kind: z.literal("invoice.cancel"), invoiceId: z.string() }),
+  z.object({ kind: z.literal("invoice.reissue"), invoiceId: z.string() }),
+  z.object({
+    kind: z.literal("customer.update"),
+    customerId: z.string(),
+    name: z.string().trim().min(2).nullable().optional(),
+    status: CatalogStatusSchema.nullable().optional()
+  }),
+  z.object({
+    kind: z.literal("supplier.update"),
+    supplierId: z.string(),
+    name: z.string().trim().min(2).nullable().optional(),
+    status: CatalogStatusSchema.nullable().optional()
+  }),
+  z.object({
+    kind: z.literal("product.update"),
+    productId: z.string(),
+    name: z.string().trim().min(2).nullable().optional(),
+    unitPrice: z.number().nonnegative().nullable().optional(),
+    availableStock: z.number().int().nonnegative().nullable().optional(),
+    status: z.enum(["active", "inactive"]).nullable().optional()
+  }),
+  z.object({
+    kind: z.literal("inventory.adjust"),
+    productId: z.string(),
+    quantity: z.number().int().nonnegative(),
+    reason: z.string().nullable().optional()
+  })
+]);
+
+export const PendingActionKindSchema = z.enum([
+  "sales_order.create",
+  "sales_order.cancel",
+  "sales_order.duplicate",
+  "sales_order.discount",
+  "invoice.cancel",
+  "invoice.reissue",
+  "customer.update",
+  "supplier.update",
+  "product.update",
+  "inventory.adjust"
+]);
+
+export const PendingActionSummarySchema = z.object({
+  id: z.string(),
+  kind: PendingActionKindSchema,
+  title: z.string(),
+  summary: z.string(),
+  details: z.array(z.string()),
+  expiresAt: z.string()
 });
 
 export const AgentRequestSchema = z.object({
@@ -469,7 +541,7 @@ export const AgentRequestSchema = z.object({
 });
 
 export const AgentConfirmRequestSchema = z.object({
-  preview: SalesOrderPreviewSchema,
+  actionId: z.string().min(1),
   createInvoice: z.boolean().default(false),
   conversationContext: ConversationContextSchema.optional()
 });
@@ -484,6 +556,7 @@ export const AgentResponseSchema = z.object({
   intelligentReport: IntelligentReportSchema.nullable().optional(),
   executionPlan: ExecutionPlanSchema.nullable().optional(),
   clarification: ClarificationRequestSchema.nullable().optional(),
+  pendingAction: PendingActionSummarySchema.nullable().optional(),
   auditEvents: z.array(AuditEventSchema),
   mcpTrace: z.array(
     z.object({
@@ -611,6 +684,10 @@ export type ExecutionPlan = z.infer<typeof ExecutionPlanSchema>;
 export type ExecutionPlanStep = z.infer<typeof ExecutionPlanStepSchema>;
 export type ClarificationOption = z.infer<typeof ClarificationOptionSchema>;
 export type ClarificationRequest = z.infer<typeof ClarificationRequestSchema>;
+export type PendingActionPayload = z.infer<typeof PendingActionPayloadSchema>;
+export type PendingActionKind = z.infer<typeof PendingActionKindSchema>;
+export type PendingActionSummary = z.infer<typeof PendingActionSummarySchema>;
+export type CreateSalesOrderInput = z.infer<typeof CreateSalesOrderInputSchema>;
 export type AgentRequest = z.infer<typeof AgentRequestSchema>;
 export type AgentConfirmRequest = z.infer<typeof AgentConfirmRequestSchema>;
 export type AgentResponse = z.infer<typeof AgentResponseSchema>;

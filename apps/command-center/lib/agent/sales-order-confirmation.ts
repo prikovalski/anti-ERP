@@ -1,7 +1,7 @@
 import type {
   AgentResponse,
   AuditEvent,
-  SalesOrderPreview
+  CreateSalesOrderInput
 } from "@anti-erp/shared";
 import type { CapabilityGateway } from "../capabilities";
 
@@ -25,11 +25,12 @@ function audit(action: string, summary: string, actor: AuditEvent["actor"] = "mc
 
 export async function confirmSalesOrder(
   gateway: CapabilityGateway,
-  preview: SalesOrderPreview,
+  input: Pick<CreateSalesOrderInput, "customerId" | "lines">,
   createInvoice: boolean
 ): Promise<AgentResponse> {
   const order = await gateway.createSalesOrder({
-    preview,
+    customerId: input.customerId,
+    lines: input.lines,
     confirmedByUser: true
   });
   const invoice = createInvoice
