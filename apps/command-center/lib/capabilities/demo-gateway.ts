@@ -1,6 +1,7 @@
 import {
   AnalyticsResult,
   ConceptInvoice,
+  CreateSalesOrderInput,
   IntelligentReport,
   InventoryMovement,
   ListConceptInvoicesInput,
@@ -12,7 +13,6 @@ import {
   QueryManagerialReportInput,
   SearchCatalogInput,
   SalesOrder,
-  SalesOrderPreview,
   Supplier,
   cleanName,
   demoCustomers,
@@ -488,9 +488,24 @@ export class DemoCapabilityGateway implements CapabilityGateway {
     };
   }
 
-  async createSalesOrder(input: { preview: SalesOrderPreview; confirmedByUser: true }) {
+  async createSalesOrder(input: CreateSalesOrderInput) {
+    if (input.confirmedByUser !== true) {
+      throw new Error("Sales order creation requires explicit user confirmation.");
+    }
+    // Prices, totals and customer status are recomputed here, never taken from the caller.
+    const preview = await this.prepareSalesOrder({ customerId: input.customerId, lines: input.lines });
+    if (preview.customer.status === "blocked") {
+      throw new Error(`Customer ${preview.customer.name} is blocked and cannot receive new orders.`);
+    }
+    for (const line of preview.lines) {
+      const product = this.requireProduct(line.productId);
+      if (product.availableStock < line.quantity) {
+        throw new Error(`${product.sku} has only ${product.availableStock} units available.`);
+      }
+    }
     const order: SalesOrder = {
-      ...input.preview,
+      ...preview,
+      warnings: [],
       id: createSalesOrderId(),
       status: "confirmed",
       createdAt: now()

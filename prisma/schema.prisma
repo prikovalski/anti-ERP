@@ -110,6 +110,23 @@ model AuditEvent {
   createdAt DateTime @default(now())
 }
 
+// Writes prepared by the agent. They only run after an explicit confirmation, and a record runs at most once.
+model PendingAction {
+  id         String    @id
+  kind       String
+  payload    Json
+  summary    String
+  status     String    @default("pending")
+  resultRef  String?
+  error      String?
+  expiresAt  DateTime
+  claimedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([status, expiresAt])
+}
+
 model McpCallLog {
   id            String   @id @default(cuid())
   requestId     String

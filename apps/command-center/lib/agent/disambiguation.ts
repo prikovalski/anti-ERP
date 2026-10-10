@@ -1,4 +1,4 @@
-import type { ClarificationRequest, Customer, Product } from "@anti-erp/shared";
+import type { ClarificationRequest, Customer, Product, Supplier } from "@anti-erp/shared";
 
 export function createCustomerDisambiguation(query: string, matches: Customer[]): ClarificationRequest {
   return {
@@ -24,6 +24,19 @@ export function createProductDisambiguation(query: string, matches: Product[]): 
       id: product.id,
       label: product.name,
       description: `${product.sku} | estoque ${product.availableStock} | ${money(product.unitPrice)}`
+    }))
+  };
+}
+
+export function createSupplierDisambiguation(query: string, matches: Supplier[]): ClarificationRequest {
+  return {
+    kind: "supplier",
+    query,
+    question: `Encontrei ${matches.length} fornecedores para "${query}". Qual deles devo usar?`,
+    options: matches.map((supplier) => ({
+      id: supplier.id,
+      label: supplier.name,
+      description: supplier.status === "blocked" ? "inativo" : "ativo"
     }))
   };
 }

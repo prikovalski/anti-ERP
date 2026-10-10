@@ -12,24 +12,16 @@ async function main() {
     ...demoCustomers.map((customer) =>
       prisma.customer.upsert({
         where: { id: customer.id },
-        update: {
-          name: customer.name,
-          taxId: customer.taxId,
-          city: customer.city,
-          status: customer.status
-        },
+        // Never overwrite an existing customer, e.g. one that was blocked after the first seed.
+        update: {},
         create: customer
       })
     ),
     ...demoProducts.map((product) =>
       prisma.product.upsert({
         where: { id: product.id },
-        update: {
-          sku: product.sku,
-          name: product.name,
-          unitPriceCents: toCents(product.unitPrice),
-          availableStock: product.availableStock
-        },
+        // Never overwrite existing stock, prices or names: re-running the seed must not reset real data.
+        update: {},
         create: {
           id: product.id,
           sku: product.sku,

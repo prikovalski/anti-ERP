@@ -16,7 +16,8 @@ test("sales order confirmation reserves stock and invoice writeoff consumes rese
     lines: [{ productId: product.id, quantity: 2 }]
   });
   const order = await gateway.createSalesOrder({
-    preview,
+    customerId: preview.customer.id,
+    lines: preview.lines,
     confirmedByUser: true
   });
   const [afterOrder] = await gateway.searchProduct({ query: "monitor" });

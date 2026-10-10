@@ -1,6 +1,7 @@
 import {
   AnalyticsResult,
   ConceptInvoice,
+  CreateSalesOrderInput,
   Customer,
   IntelligentReport,
   InventoryMovement,
@@ -17,13 +18,12 @@ import {
   SearchCatalogInput,
   Supplier,
   cleanName,
-  demoCustomers,
-  demoProducts,
   normalizeText,
   roundMoney,
   slugify
 } from "@anti-erp/shared";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
+import { prisma } from "./prisma-client";
 import { queryIntelligentReportFromSql } from "./intelligent-report";
 import type { CapabilityGateway } from "./types";
 
@@ -105,29 +105,9 @@ type RawInventoryMovementRow = {
   created_at: Date;
 };
 
-const globalForPrisma = globalThis as unknown as {
-  prisma?: PrismaClient;
-};
-
-const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"]
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = prisma;
-}
-
-let seedPromise: Promise<void> | null = null;
 let invoiceSchemaPromise: Promise<void> | null = null;
 let productSchemaPromise: Promise<void> | null = null;
 let inventorySchemaPromise: Promise<void> | null = null;
-
-function ensureSeeded() {
-  seedPromise ??= seedDemoData();
-  return seedPromise;
-}
 
 function ensureInvoiceSchema() {
   invoiceSchemaPromise ??= ensureConceptInvoiceColumns();
@@ -457,7 +437,6 @@ async function applyInventoryMovement(input: {
   nextReservedStock: (current: DbProduct & { reservedStock: number }) => number;
   reason?: string | null;
 }) {
-  await ensureSeeded();
   await ensureInventorySchema();
   return applyInventoryMovementWithClient(prisma, input);
 }
@@ -697,57 +676,6 @@ function assertUniqueName<T extends { id: string; name: string }>(
   }
 }
 
-async function seedDemoData() {
-  await Promise.all([
-    ...demoCustomers.map((customer) =>
-      prisma.customer.upsert({
-        where: { id: customer.id },
-        update: {
-          name: customer.name,
-          taxId: customer.taxId,
-          city: customer.city,
-          status: customer.status
-        },
-        create: customer
-      })
-    ),
-    ...demoProducts.map((product) =>
-      prisma.product.upsert({
-        where: { id: product.id },
-        update: {
-          sku: product.sku,
-          name: product.name,
-          unitPriceCents: toCents(product.unitPrice),
-          availableStock: product.availableStock
-        },
-        create: {
-          id: product.id,
-          sku: product.sku,
-          name: product.name,
-          unitPriceCents: toCents(product.unitPrice),
-          availableStock: product.availableStock
-        }
-      })
-    ),
-    prisma.sequenceCounter.upsert({
-      where: { name: "sales_order" },
-      update: {},
-      create: {
-        name: "sales_order",
-        nextValue: 1001
-      }
-    }),
-    prisma.sequenceCounter.upsert({
-      where: { name: "concept_invoice" },
-      update: {},
-      create: {
-        name: "concept_invoice",
-        nextValue: 5001
-      }
-    })
-  ]);
-}
-
 async function nextBusinessId(
   tx: PrismaTransaction,
   name: string,
@@ -771,7 +699,6 @@ async function nextBusinessId(
 
 export class PrismaCapabilityGateway implements CapabilityGateway {
   async createCustomer(input: { name: string }) {
-    await ensureSeeded();
     const name = cleanName(input.name);
     const normalizedName = normalize(name);
     const customers = (await prisma.customer.findMany()) as DbCustomer[];
@@ -800,7 +727,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     city?: string | null;
     status?: "active" | "inactive" | "blocked" | null;
   }) {
-    await ensureSeeded();
     const customers = (await prisma.customer.findMany()) as DbCustomer[];
     const current = customers.find((customer) => customer.id === input.customerId);
     if (!current) {
@@ -821,7 +747,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async listCustomers() {
-    await ensureSeeded();
     const customers = (await prisma.customer.findMany({
       orderBy: {
         name: "asc"
@@ -832,7 +757,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async searchCustomersAdvanced(input: SearchCatalogInput = {}) {
-    await ensureSeeded();
     const customers = (await prisma.customer.findMany({
       orderBy: { name: "asc" }
     })) as DbCustomer[];
@@ -842,7 +766,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async createProduct(input: { name: string }) {
-    await ensureSeeded();
     await ensureProductSchema();
     const name = cleanName(input.name);
     const products = (await prisma.product.findMany()) as DbProduct[];
@@ -863,7 +786,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async listProducts(input: SearchCatalogInput = {}) {
-    await ensureSeeded();
     await ensureProductSchema();
     const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product" ORDER BY name ASC');
     const matches = filterByCatalogSearch(products, input);
@@ -872,7 +794,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async createSupplier(input: { name: string }) {
-    await ensureSeeded();
     const name = cleanName(input.name);
     const normalizedName = normalize(name);
     const suppliers = (await prisma.supplier.findMany()) as DbSupplier[];
@@ -898,7 +819,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     name?: string | null;
     status?: "active" | "inactive" | "blocked" | null;
   }) {
-    await ensureSeeded();
     const suppliers = (await prisma.supplier.findMany()) as DbSupplier[];
     const current = suppliers.find((supplier) => supplier.id === input.supplierId);
     if (!current) {
@@ -922,7 +842,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async listSuppliers(input: SearchCatalogInput = {}) {
-    await ensureSeeded();
     const suppliers = (await prisma.supplier.findMany({
       orderBy: { name: "asc" }
     })) as DbSupplier[];
@@ -938,7 +857,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     availableStock?: number | null;
     status?: "active" | "inactive" | null;
   }) {
-    await ensureSeeded();
     await ensureProductSchema();
     const products = await prisma.$queryRawUnsafe<DbProduct[]>('SELECT id, sku, name, "unitPriceCents", "availableStock", "reservedStock", status FROM "Product"');
     const current = products.find((product) => product.id === input.productId);
@@ -982,7 +900,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async searchCustomer(input: { query: string }) {
-    await ensureSeeded();
     const query = normalize(input.query);
     const customers = (await prisma.customer.findMany()) as DbCustomer[];
     const matches = customers.filter(
@@ -1003,7 +920,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async validateStock(input: { productId: string; quantity: number }) {
-    await ensureSeeded();
     const product = (await prisma.product.findUniqueOrThrow({
       where: { id: input.productId }
     })) as DbProduct;
@@ -1022,7 +938,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async listLowStockProducts(input: { threshold?: number } = {}) {
-    await ensureSeeded();
     await ensureProductSchema();
     const threshold = input.threshold ?? 10;
     const products = await prisma.$queryRawUnsafe<DbProduct[]>(
@@ -1125,7 +1040,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async writeOffInventoryForSalesOrder(input: { salesOrderId: string; reason?: string | null }) {
-    await ensureSeeded();
     await ensureInventorySchema();
     const order = await this.getSalesOrder({ salesOrderId: input.salesOrderId });
     if (!order) {
@@ -1186,7 +1100,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     customerId: string;
     lines: Array<{ productId: string; quantity: number }>;
   }) {
-    await ensureSeeded();
     const customer = (await prisma.customer.findUniqueOrThrow({
       where: { id: input.customerId }
     })) as DbCustomer;
@@ -1236,23 +1149,50 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     return preview;
   }
 
-  async createSalesOrder(input: { preview: SalesOrderPreview; confirmedByUser: true }) {
-    await ensureSeeded();
+  async createSalesOrder(input: CreateSalesOrderInput) {
+    if (input.confirmedByUser !== true) {
+      throw new Error("Sales order creation requires explicit user confirmation.");
+    }
     await ensureInventorySchema();
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
+      // Customer status and prices come from the database, never from the caller.
+      const customer = (await tx.customer.findUnique({
+        where: { id: input.customerId }
+      })) as DbCustomer | null;
+      if (!customer) {
+        throw new Error(`Customer ${input.customerId} not found.`);
+      }
+      if (customer.status === "blocked") {
+        throw new Error(`Customer ${customer.name} is blocked and cannot receive new orders.`);
+      }
+      const products = (await tx.product.findMany({
+        where: {
+          id: {
+            in: input.lines.map((line) => line.productId)
+          }
+        }
+      })) as DbProduct[];
+      const lines = input.lines.map((line) => {
+        const product = products.find((candidate) => candidate.id === line.productId);
+        if (!product) {
+          throw new Error(`Product ${line.productId} not found.`);
+        }
+        return {
+          productId: product.id,
+          quantity: line.quantity,
+          unitPriceCents: product.unitPriceCents,
+          totalCents: product.unitPriceCents * line.quantity
+        };
+      });
+
       const id = await nextBusinessId(tx, "sales_order", "SO", 1001);
       const createdOrder = await tx.salesOrder.create({
         data: {
           id,
-          customerId: input.preview.customer.id,
+          customerId: customer.id,
           status: "confirmed",
           lines: {
-            create: input.preview.lines.map((line) => ({
-              productId: line.productId,
-              quantity: line.quantity,
-              unitPriceCents: toCents(line.unitPrice),
-              totalCents: toCents(line.total)
-            }))
+            create: lines
           }
         },
         include: {
@@ -1264,7 +1204,8 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
           }
         }
       });
-      for (const line of input.preview.lines) {
+      // Locks each product row and fails the whole transaction when stock is no longer available.
+      for (const line of lines) {
         await applyInventoryMovementWithClient(tx, {
           productId: line.productId,
           salesOrderId: id,
@@ -1290,7 +1231,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     productId: string;
     quantity: number;
   }) {
-    await ensureSeeded();
     await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
@@ -1374,7 +1314,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     productId: string;
     quantity: number;
   }) {
-    await ensureSeeded();
     await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
@@ -1469,7 +1408,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     salesOrderId: string;
     productId: string;
   }) {
-    await ensureSeeded();
     await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
@@ -1534,7 +1472,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     discountType: "percent" | "amount";
     value: number;
   }) {
-    await ensureSeeded();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
       const existingOrder = await tx.salesOrder.findUniqueOrThrow({
@@ -1613,7 +1550,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async cancelSalesOrder(input: { salesOrderId: string }) {
-    await ensureSeeded();
     await ensureInventorySchema();
     const currentOrder = await fetchSalesOrderRaw(input.salesOrderId);
     if (!currentOrder) {
@@ -1681,7 +1617,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async duplicateSalesOrder(input: { salesOrderId: string }) {
-    await ensureSeeded();
     await ensureInventorySchema();
     await assertSalesOrderCanChange(input.salesOrderId);
     const order = await prisma.$transaction(async (tx: PrismaTransaction) => {
@@ -1755,7 +1690,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async createConceptInvoice(input: { salesOrderId: string }) {
-    await ensureSeeded();
     await ensureInvoiceSchema();
     await ensureInventorySchema();
     const invoiceId = await prisma.$transaction(async (tx: PrismaTransaction) => {
@@ -1825,7 +1759,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async cancelConceptInvoice(input: { invoiceId: string }) {
-    await ensureSeeded();
     await ensureInvoiceSchema();
     const invoice = await fetchConceptInvoiceRaw(input.invoiceId);
     if (!invoice) {
@@ -1849,7 +1782,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async reissueConceptInvoice(input: { invoiceId: string }) {
-    await ensureSeeded();
     await ensureInvoiceSchema();
     const sourceInvoice = await fetchConceptInvoiceRaw(input.invoiceId);
     if (!sourceInvoice) {
@@ -1907,14 +1839,12 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async getConceptInvoice(input: { invoiceId: string }) {
-    await ensureSeeded();
     const invoice = await fetchConceptInvoiceRaw(input.invoiceId);
     await audit("get_concept_invoice", `Fetched concept invoice ${input.invoiceId}`);
     return invoice;
   }
 
   async listConceptInvoices(input: ListConceptInvoicesInput = {}) {
-    await ensureSeeded();
     const invoices = await fetchConceptInvoicesRaw(input);
     await audit("list_concept_invoices", "Listed concept invoices", {
       salesOrderId: input.salesOrderId ?? null,
@@ -1926,14 +1856,12 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async getSalesOrder(input: { salesOrderId: string }) {
-    await ensureSeeded();
     const order = await fetchSalesOrderRaw(input.salesOrderId);
     await audit("get_sales_order", `Fetched sales order ${input.salesOrderId}`);
     return order;
   }
 
   async listSalesOrders(input: ListSalesOrdersInput = {}) {
-    await ensureSeeded();
     const orders = await fetchSalesOrdersRaw(input);
     const take = input.take ?? 25;
     await audit("list_sales_orders", "Listed sales orders", {
@@ -1982,7 +1910,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
     dateRange: "today" | "last_7_days" | "last_30_days" | "month_to_date" | "all_time";
     groupBy?: "product" | "customer" | "day" | null;
   }) {
-    await ensureSeeded();
     const productQueries = normalizeProductQueries(input.productQuery, input.productQueries);
     const customerQuery = normalize(input.customerQuery ?? "");
     const orders = await fetchSalesOrdersRaw({
@@ -2060,7 +1987,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async queryManagerialReport(input: QueryManagerialReportInput) {
-    await ensureSeeded();
     await ensureProductSchema();
     const kind = input.kind ?? inferManagerialReportKind(input.question ?? "");
     const dateRange = input.dateRange ?? "all_time";
@@ -2095,7 +2021,6 @@ export class PrismaCapabilityGateway implements CapabilityGateway {
   }
 
   async queryIntelligentReport(input: { question: string }): Promise<IntelligentReport> {
-    await ensureSeeded();
     return queryIntelligentReportFromSql({
       question: input.question,
       dataSource: "postgres",

@@ -31,7 +31,7 @@ test("confirmSalesOrder creates an order without invoice", async () => {
   const calls: string[] = [];
   const gateway = createGatewayStub(calls);
 
-  const response = await confirmSalesOrder(gateway, preview, false);
+  const response = await confirmSalesOrder(gateway, { customerId: preview.customer.id, lines: preview.lines }, false);
 
   assert.equal(response.order?.id, "SO-9001");
   assert.equal(response.invoice, null);
@@ -43,7 +43,7 @@ test("confirmSalesOrder creates order and concept invoice", async () => {
   const calls: string[] = [];
   const gateway = createGatewayStub(calls);
 
-  const response = await confirmSalesOrder(gateway, preview, true);
+  const response = await confirmSalesOrder(gateway, { customerId: preview.customer.id, lines: preview.lines }, true);
 
   assert.equal(response.order?.id, "SO-9001");
   assert.equal(response.invoice?.id, "CI-9001");
@@ -56,8 +56,10 @@ function createGatewayStub(calls: string[]): CapabilityGateway {
     async createSalesOrder(input) {
       calls.push("createSalesOrder");
       assert.equal(input.confirmedByUser, true);
+      assert.equal(input.customerId, preview.customer.id);
+      assert.deepEqual(input.lines, preview.lines);
       return {
-        ...input.preview,
+        ...preview,
         id: "SO-9001",
         status: "confirmed",
         createdAt: "2026-07-08T00:00:00.000Z"

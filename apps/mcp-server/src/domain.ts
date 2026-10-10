@@ -236,7 +236,11 @@ export function prepareSalesOrder(input: unknown) {
 }
 
 export function createSalesOrder(input: unknown) {
-  const { preview } = CreateSalesOrderInputSchema.parse(input);
+  const { customerId, lines } = CreateSalesOrderInputSchema.parse(input);
+  const preview = prepareSalesOrder({ customerId, lines });
+  if (preview.warnings.length) {
+    throw new Error(`Sales order cannot be created: ${preview.warnings.join(" ")}`);
+  }
   const order: SalesOrder = {
     ...preview,
     id: createSalesOrderId(),

@@ -13,7 +13,8 @@ import {
   ManagerialReportSchema,
   QueryManagerialReportInputSchema,
   SalesOrderPreviewSchema,
-  SalesOrderSchema
+  SalesOrderSchema,
+  type CreateSalesOrderInput
 } from "@anti-erp/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -415,10 +416,7 @@ export class McpCapabilityGateway implements CapabilityGateway {
     return callTool("prepare_sales_order", input, SalesOrderPreviewSchema);
   }
 
-  async createSalesOrder(input: {
-    preview: z.infer<typeof SalesOrderPreviewSchema>;
-    confirmedByUser: true;
-  }) {
+  async createSalesOrder(input: CreateSalesOrderInput) {
     return callTool("create_sales_order", input, SalesOrderSchema);
   }
 
